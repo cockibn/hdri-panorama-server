@@ -90,38 +90,42 @@ class PanoramaProcessor:
             # Extract capture point data
             capture_points = session_data.get('capturePoints', [])
             
-            # For now, create a simple test panorama to verify the upload/download workflow
-            # This avoids memory issues while we test the full pipeline
+            # Now with 8GB RAM, we can use proper OpenCV panorama stitching
+            self._update_job_status(job_id, JobState.PROCESSING, 0.4, "Initializing OpenCV panorama stitcher...")
             
-            self._update_job_status(job_id, JobState.PROCESSING, 0.5, "Creating test panorama...")
+            # Use OpenCV's built-in panorama stitcher with optimized settings
+            stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
             
-            # Create a simple test panorama by concatenating first few images horizontally
-            test_images = images[:4]  # Use first 4 images to avoid memory issues
+            # Configure stitcher for better results with ultra-wide images
+            stitcher.setPanoConfidenceThresh(0.3)  # Lower threshold for ultra-wide
             
-            # Resize images to smaller size for testing
-            resized = []
-            for img in test_images:
-                height = 400  # Small height for testing
-                width = int(height * img.shape[1] / img.shape[0])
-                resized_img = cv2.resize(img, (width, height))
-                resized.append(resized_img)
+            self._update_job_status(job_id, JobState.PROCESSING, 0.5, "Detecting features and matching images...")
             
-            self._update_job_status(job_id, JobState.PROCESSING, 0.7, "Combining images...")
+            # Log image information
+            logger.info(f"Processing {len(images)} images for panorama stitching")
+            for i, img in enumerate(images):
+                logger.info(f"Image {i}: {img.shape[1]}x{img.shape[0]} pixels")
             
-            # Concatenate horizontally
-            result = np.hstack(resized)
+            self._update_job_status(job_id, JobState.PROCESSING, 0.7, "Stitching panorama with OpenCV...")
             
-            self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Test panorama completed!")
+            # Perform the stitching
+            status, result = stitcher.stitch(images)
             
-            # Create basic quality metrics
-            quality_metrics = {
-                "overallScore": 0.8,
-                "seamQuality": 0.75,
-                "featureMatches": len(images) * 50,  # Estimated
-                "geometricConsistency": 0.85,
-                "colorConsistency": 0.8,
-                "processingTime": 0.0  # Will be set later
-            }
+            if status == cv2.Stitcher_OK:
+                self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Panorama stitching completed successfully!")
+                logger.info(f"Stitching successful! Result size: {result.shape[1]}x{result.shape[0]}")
+                
+                # Calculate actual quality metrics based on result
+                quality_metrics = self._calculate_stitching_quality(result, len(images))
+                
+            elif status == cv2.Stitcher_ERR_NEED_MORE_IMGS:
+                raise Exception("Need more images for stitching - ensure good overlap between images")
+            elif status == cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL:
+                raise Exception("Failed to estimate homography - images may not have enough common features")
+            elif status == cv2.Stitcher_ERR_CAMERA_PARAMS_ADJUST_FAIL:
+                raise Exception("Failed to adjust camera parameters - try with different images")
+            else:
+                raise Exception(f"OpenCV stitching failed with status code: {status}")
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Saving processed panorama...")
             
@@ -186,6 +190,45 @@ class PanoramaProcessor:
                     jobs[job_id]["resultUrl"] = result_url
                 if quality_metrics:
                     jobs[job_id]["qualityMetrics"] = quality_metrics
+    
+    def _calculate_stitching_quality(self, panorama: np.ndarray, num_images: int) -> dict:
+        """Calculate quality metrics for the stitched panorama"""
+        
+        # Image sharpness using Laplacian variance
+        gray = cv2.cvtColor(panorama, cv2.COLOR_BGR2GRAY)
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        sharpness_score = min(laplacian_var / 2000.0, 1.0)  # Normalize
+        
+        # Color consistency (simplified)
+        lab = cv2.cvtColor(panorama, cv2.COLOR_BGR2LAB)
+        color_std = np.std(lab[:, :, 1:])  # Standard deviation of a,b channels
+        color_consistency = max(0, 1.0 - color_std / 50.0)
+        
+        # Estimate feature matches based on successful stitching
+        estimated_matches = num_images * 100  # Rough estimate
+        
+        # Geometric consistency based on panorama aspect ratio
+        height, width = panorama.shape[:2]
+        aspect_ratio = width / height
+        # Good panoramas typically have 2:1 to 4:1 aspect ratio
+        geometric_consistency = 1.0 if 2.0 <= aspect_ratio <= 4.0 else 0.7
+        
+        # Overall score (weighted average)
+        overall_score = (
+            sharpness_score * 0.3 +
+            color_consistency * 0.25 +
+            geometric_consistency * 0.25 +
+            0.2  # Base score for successful completion
+        )
+        
+        return {
+            "overallScore": float(np.clip(overall_score, 0, 1)),
+            "seamQuality": float(np.clip(color_consistency, 0, 1)),
+            "featureMatches": int(estimated_matches),
+            "geometricConsistency": float(np.clip(geometric_consistency, 0, 1)),
+            "colorConsistency": float(np.clip(color_consistency, 0, 1)),
+            "processingTime": 0.0  # Will be updated by caller
+        }
 
 def extract_bundle_images(bundle_file, upload_dir):
     """Extract images from our custom bundle format"""
