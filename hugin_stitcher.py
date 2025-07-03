@@ -231,8 +231,8 @@ class HuginPanoramaStitcher:
         command = ["pto_gen", "-o", project_file] + image_paths
         self._run_hugin_command(command)
         
-        # Apply iPhone 15 Pro ultra-wide specific optimizations
-        self._optimize_pto_for_iphone_ultrawide(project_file, image_paths)
+        # Skip ultra-wide optimizations for now to get basic Hugin working
+        # self._optimize_pto_for_iphone_ultrawide(project_file, image_paths)
         
         # Set initial camera positions based on capture points
         if capture_points and len(capture_points) == len(image_paths):
@@ -349,41 +349,44 @@ class HuginPanoramaStitcher:
         logger.info(f"Set initial positions for {image_index} images")
     
     def _find_control_points(self, project_file: str) -> str:
-        """Find control points using cpfind optimized for iPhone 15 Pro ultra-wide"""
+        """Find control points using cpfind with very lenient settings for ultra-wide"""
         output_file = os.path.join(self.temp_dir, "project_cp.pto")
         
-        # Ultra-wide optimized cpfind parameters
+        # Start with very basic, lenient parameters
         command = [
             "cpfind",
             "-o", output_file,
-            "--multirow",                    # Enable multirow detection
-            "--celeste",                     # Use celeste for sky detection  
-            "--sift",                        # Use SIFT detector
-            "--ransac-mode", "auto",         # Automatic RANSAC
-            "--ransac-threshold", "15",      # Tighter threshold for ultra-wide precision
-            "--min-matches", "6",            # Higher minimum for ultra-wide reliability
-            "--sift-features", "3000",       # More features for ultra-wide content
-            "--kdtree-levels", "6",          # Better search for ultra-wide features
-            "--cores", "0",                  # Use all available cores
+            "--sift",                        # Use SIFT detector only
             project_file
         ]
         
         try:
-            self._run_hugin_command(command, timeout=600)  # 10 minute timeout
+            stdout, stderr = self._run_hugin_command(command, timeout=600)  # 10 minute timeout
+            logger.info(f"cpfind stdout: {stdout}")
+            logger.info(f"cpfind stderr: {stderr}")
             
             # Verify the output file was created and has content
             if not os.path.exists(output_file):
+                logger.error("cpfind did not create output file")
                 raise RuntimeError("cpfind did not create output file")
+            
+            # Check file size
+            file_size = os.path.getsize(output_file)
+            logger.info(f"cpfind output file size: {file_size} bytes")
             
             # Check if file has control points
             with open(output_file, 'r') as f:
                 content = f.read()
-                if 'c n' not in content:  # No control points found
-                    logger.warning("No control points found between images")
-                    # Try again with more lenient settings
+                logger.info(f"cpfind output preview: {content[:500]}...")
+                
+                control_point_count = content.count('c n')
+                logger.info(f"Found {control_point_count} control points")
+                
+                if control_point_count == 0:  # No control points found
+                    logger.warning("No control points found between images, trying fallback")
                     return self._find_control_points_fallback(project_file)
             
-            logger.info("Control point detection completed")
+            logger.info(f"Control point detection completed with {control_point_count} control points")
             return output_file
             
         except Exception as e:
@@ -392,25 +395,36 @@ class HuginPanoramaStitcher:
             return self._find_control_points_fallback(project_file)
     
     def _find_control_points_fallback(self, project_file: str) -> str:
-        """Fallback control point detection with ultra-wide optimized lenient settings"""
+        """Fallback control point detection with very basic settings"""
         output_file = os.path.join(self.temp_dir, "project_cp_fallback.pto")
         
-        # Very lenient settings for difficult ultra-wide scenarios
+        # Extremely basic settings - just try to find anything
         command = [
             "cpfind",
             "-o", output_file,
-            "--sift",                        # Use SIFT detector only
-            "--ransac-threshold", "35",      # Moderate threshold for ultra-wide
-            "--min-matches", "3",            # Lower minimum for difficult cases
-            "--sift-features", "5000",       # Maximum features for ultra-wide
-            "--filter-distance", "0.7",     # More lenient distance filter
-            project_file
+            project_file  # No additional parameters at all
         ]
         
-        self._run_hugin_command(command, timeout=600)
-        
-        logger.info("Ultra-wide optimized fallback control point detection completed")
-        return output_file
+        try:
+            stdout, stderr = self._run_hugin_command(command, timeout=600)
+            logger.info(f"cpfind fallback stdout: {stdout}")
+            logger.info(f"cpfind fallback stderr: {stderr}")
+            
+            if os.path.exists(output_file):
+                file_size = os.path.getsize(output_file)
+                logger.info(f"cpfind fallback output file size: {file_size} bytes")
+                
+                with open(output_file, 'r') as f:
+                    content = f.read()
+                    control_point_count = content.count('c n')
+                    logger.info(f"cpfind fallback found {control_point_count} control points")
+            
+            logger.info("Basic fallback control point detection completed")
+            return output_file
+            
+        except Exception as e:
+            logger.error(f"Even fallback cpfind failed: {e}")
+            raise
     
     def _clean_control_points(self, project_file: str) -> str:
         """Clean control points using cpclean"""
@@ -462,26 +476,21 @@ class HuginPanoramaStitcher:
             return project_file
     
     def _optimize_panorama(self, project_file: str) -> str:
-        """Optimize panorama using autooptimiser with ultra-wide specific settings"""
+        """Optimize panorama using autooptimiser with basic settings"""
         output_file = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # Ultra-wide optimized optimization parameters
+        # Basic optimization parameters
         command = [
             "autooptimiser",
-            "-a",              # Optimize positions and barrel distortion (critical for ultra-wide)
-            "-b",              # Optimize barrel distortion parameters
-            "-c",              # Optimize perspective distortion 
-            "-d",              # Optimize radial shift
-            "-e",              # Optimize shear parameters
-            "-m",              # Optimize photometric parameters
-            "-s",              # Optimize image center shift
+            "-a",              # Optimize positions and barrel distortion
+            "-m",              # Optimize photometric parameters  
             "-o", output_file,
             project_file
         ]
         
-        self._run_hugin_command(command, timeout=900)  # 15 minute timeout for complex optimization
+        self._run_hugin_command(command, timeout=600)  # 10 minute timeout
         
-        logger.info("Ultra-wide optimized panorama optimization completed")
+        logger.info("Basic panorama optimization completed")
         return output_file
     
     def _set_output_parameters(self, project_file: str) -> str:
