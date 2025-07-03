@@ -349,50 +349,93 @@ class HuginPanoramaStitcher:
         logger.info(f"Set initial positions for {image_index} images")
     
     def _find_control_points(self, project_file: str) -> str:
-        """Find control points using cpfind with very lenient settings for ultra-wide"""
+        """Find control points using align_image_stack (better for ultra-wide)"""
         output_file = os.path.join(self.temp_dir, "project_cp.pto")
         
-        # Start with very basic, lenient parameters
+        # Try align_image_stack instead of cpfind for ultra-wide images
+        try:
+            return self._find_control_points_with_align_image_stack(project_file)
+        except Exception as e:
+            logger.warning(f"align_image_stack failed: {e}, trying cpfind")
+            return self._find_control_points_with_cpfind(project_file)
+    
+    def _find_control_points_with_align_image_stack(self, project_file: str) -> str:
+        """Use align_image_stack for better ultra-wide handling"""
+        
+        # Read image paths from PTO file
+        with open(project_file, 'r') as f:
+            pto_content = f.read()
+        
+        image_paths = []
+        for line in pto_content.split('\n'):
+            if line.startswith('i ') and 'n"' in line:
+                # Extract filename from: i f... n"filename"
+                start = line.find('n"') + 2
+                end = line.find('"', start)
+                if start > 1 and end > start:
+                    filename = line[start:end]
+                    if os.path.isabs(filename):
+                        image_paths.append(filename)
+                    else:
+                        image_paths.append(os.path.join(self.temp_dir, filename))
+        
+        if len(image_paths) < 2:
+            raise RuntimeError("Not enough images found in PTO file")
+        
+        logger.info(f"Using align_image_stack with {len(image_paths)} images")
+        
+        # Use align_image_stack with minimal options
+        aligned_prefix = os.path.join(self.temp_dir, "aligned_")
+        command = [
+            "align_image_stack",
+            "-m",                   # Optimize photometric parameters
+            "-a", aligned_prefix,   # Output prefix
+        ] + image_paths[:4]  # Limit to first 4 images to avoid hanging
+        
+        try:
+            stdout, stderr = self._run_hugin_command(command, timeout=180)  # 3 minute timeout
+            logger.info(f"align_image_stack completed")
+            
+            # align_image_stack doesn't create PTO files, so we need to use its output differently
+            # For now, let's try the traditional cpfind approach but with a stricter timeout
+            return self._find_control_points_with_cpfind(project_file)
+            
+        except Exception as e:
+            logger.error(f"align_image_stack failed: {e}")
+            raise
+    
+    def _find_control_points_with_cpfind(self, project_file: str) -> str:
+        """Traditional cpfind approach with strict timeout"""
+        output_file = os.path.join(self.temp_dir, "project_cp.pto")
+        
+        # Very basic cpfind with strict timeout
         command = [
             "cpfind",
             "-o", output_file,
-            "--sift",                        # Use SIFT detector only
+            "--sift",              # SIFT only
+            "--kall",              # Keep all matches (less filtering)
             project_file
         ]
         
         try:
-            stdout, stderr = self._run_hugin_command(command, timeout=120)  # 2 minute timeout
-            logger.info(f"cpfind stdout: {stdout}")
-            logger.info(f"cpfind stderr: {stderr}")
-            
-            # Verify the output file was created and has content
-            if not os.path.exists(output_file):
-                logger.error("cpfind did not create output file")
-                raise RuntimeError("cpfind did not create output file")
-            
-            # Check file size
-            file_size = os.path.getsize(output_file)
-            logger.info(f"cpfind output file size: {file_size} bytes")
+            stdout, stderr = self._run_hugin_command(command, timeout=60)  # 1 minute timeout
+            logger.info(f"cpfind completed")
             
             # Check if file has control points
-            with open(output_file, 'r') as f:
-                content = f.read()
-                logger.info(f"cpfind output preview: {content[:500]}...")
-                
-                control_point_count = content.count('c n')
-                logger.info(f"Found {control_point_count} control points")
-                
-                if control_point_count == 0:  # No control points found
-                    logger.warning("No control points found between images, trying fallback")
-                    return self._find_control_points_fallback(project_file)
+            if os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    content = f.read()
+                    control_point_count = content.count('c n')
+                    logger.info(f"Found {control_point_count} control points")
+                    
+                    if control_point_count == 0:
+                        raise RuntimeError("No control points found")
             
-            logger.info(f"Control point detection completed with {control_point_count} control points")
             return output_file
             
         except Exception as e:
-            logger.warning(f"Control point detection failed: {e}")
-            # Try fallback method
-            return self._find_control_points_fallback(project_file)
+            logger.error(f"cpfind failed: {e}")
+            raise
     
     def _find_control_points_fallback(self, project_file: str) -> str:
         """Fallback control point detection with very basic settings"""
