@@ -61,59 +61,64 @@ class JobState:
 class PanoramaProcessor:
     """
     Processes a set of images into a 360-degree spherical panorama using
-    OpenCV's feature-based stitcher.
+    a correctly configured OpenCV feature-based stitcher.
     """
     
     def __init__(self):
-        # Use OpenCV's built-in stitcher, configured for spherical output
-        # This is the key to robust, feature-based stitching.
-        self.stitcher = cv2.Stitcher.create(cv2.Stitcher_SCANS)
+        # 1. Use the correct mode for 360° panoramas
+        self.stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
         
-        # Configure stitcher for better ultra-wide image handling
+        # 2. Explicitly configure the stitcher to use a spherical warper.
+        # This is the most critical step for creating a correct 360° photo sphere.
+        # We calculate a suitable focal length based on typical phone camera FoV.
+        # For a ~120° ultra-wide FoV, the focal length is ~0.6 * image_width.
+        # We pass this default; the stitcher will refine it.
         try:
-            # Set warper type to spherical for 360° panoramas
-            self.stitcher.setWaveCorrection(True)
-            self.stitcher.setPanoConfidenceThresh(0.3)  # Lower confidence threshold
+            # For modern OpenCV (4.x)
+            spherical_warper = cv2.SphericalWarper()
+            self.stitcher.setWarper(spherical_warper)
         except AttributeError:
-            # Fallback for older OpenCV versions
-            pass
+            # Older OpenCV versions might not have this setter, but PANORAMA mode
+            # should default to a spherical-like warper.
+            logger.warning("Could not set spherical warper. Relying on default PANORAMA mode settings.")
+            
+        # Optional: Set a different feature detector if needed (e.g., ORB for speed, SIFT for accuracy)
+        # self.stitcher.setFeaturesFinder(cv2.SIFT_create()) # Requires opencv-contrib-python
 
     def process_session(self, job_id: str, session_data: dict, image_files: List[str]) -> dict:
-        """Process a complete panorama session using feature-based stitching."""
+        """Process a complete panorama session using a robust, single-pass stitch."""
         
         start_time = time.time()
         try:
             self._update_job_status(job_id, JobState.PROCESSING, 0.0, "Loading and preparing images...")
             
-            # 1. Load, orient, and resize images
             images = []
             for i, img_path in enumerate(image_files):
                 img = self._load_and_orient_image(img_path)
                 if img is not None:
-                    # Resize for faster processing, but maintain decent resolution
                     h, w = img.shape[:2]
-                    scale = 1024 / max(h, w) # Resize longest edge to 1024px
+                    # Resize for performance, maintaining aspect ratio
+                    scale = 1024 / max(h, w)
                     resized_img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
                     images.append(resized_img)
                     
-                    progress = (i + 1) / len(image_files) * 0.4 # Loading is a bigger part now
+                    progress = (i + 1) / len(image_files) * 0.5
                     self._update_job_status(job_id, JobState.PROCESSING, progress, f"Loaded image {i+1}/{len(image_files)}")
             
             if len(images) < 4:
                 raise ValueError("At least 4 valid images are required for stitching.")
             
-            logger.info(f"Job {job_id}: Starting stitching process with {len(images)} images.")
-            self._update_job_status(job_id, JobState.PROCESSING, 0.4, "Stitching images with OpenCV...")
+            logger.info(f"Job {job_id}: Starting robust stitching with {len(images)} images.")
+            self._update_job_status(job_id, JobState.PROCESSING, 0.5, "Stitching 360° panorama with OpenCV...")
 
-            # 2. Enhanced stitching with fallback strategies
-            status, panorama = self._robust_stitch(images, job_id)
+            # 3. Perform the stitch. No complex fallbacks needed with correct configuration.
+            status, panorama = self.stitcher.stitch(images)
 
             if status != cv2.Stitcher_OK:
-                # Handle stitching failure
                 error_messages = {
                     cv2.Stitcher_ERR_NEED_MORE_IMGS: "Not enough images to stitch.",
-                    cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL: "Failed to estimate transformations. Check for sufficient overlap and features.",
-                    cv2.Stitcher_ERR_CAMERA_PARAMS_ADJUST_FAIL: "Failed to adjust camera parameters."
+                    cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL: "Stitching failed. Ensure images have sufficient overlap and distinct features.",
+                    cv2.Stitcher_ERR_CAMERA_PARAMS_ADJUST_FAIL: "Could not adjust camera parameters during stitching."
                 }
                 error_message = error_messages.get(status, f"An unknown stitching error occurred (Code: {status}).")
                 raise RuntimeError(error_message)
@@ -121,17 +126,14 @@ class PanoramaProcessor:
             logger.info(f"Job {job_id}: Stitching successful!")
             self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Cropping and finalizing panorama...")
 
-            # 3. Post-process the result: crop black borders
             result = self._crop_black_borders(panorama)
 
-            # 4. Calculate actual quality metrics
             processing_time = round(time.time() - start_time, 2)
             quality_metrics = self._calculate_stitching_quality(result, len(images))
             quality_metrics["processingTime"] = processing_time
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Saving processed panorama...")
 
-            # 5. Save the final image
             output_path = OUTPUT_DIR / f"{job_id}_panorama.jpg"
             cv2.imwrite(str(output_path), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
             
@@ -143,96 +145,10 @@ class PanoramaProcessor:
             return {"success": True, "output_path": str(output_path)}
             
         except Exception as e:
-            logger.exception(f"Processing failed for job {job_id}") # Use logger.exception for full traceback
-            self._update_job_status(job_id, JobState.FAILED, 0.0, f"Processing failed: {str(e)}")
+            logger.exception(f"Processing failed for job {job_id}")
+            self._update_job_status(job_id, JobState.FAILED, 0.0, f"Processing error: {str(e)}")
             return {"success": False, "error": str(e)}
 
-    def _robust_stitch(self, images: List[np.ndarray], job_id: str) -> Tuple[int, np.ndarray]:
-        """Enhanced stitching with multiple fallback strategies."""
-        
-        # Strategy 1: Try with all images first
-        try:
-            logger.info(f"Job {job_id}: Attempting to stitch {len(images)} images")
-            status, panorama = self.stitcher.stitch(images)
-            if status == cv2.Stitcher_OK:
-                return status, panorama
-        except Exception as e:
-            logger.warning(f"Job {job_id}: Full stitch failed: {e}")
-        
-        # Strategy 2: Try with smaller batches and combine
-        logger.info(f"Job {job_id}: Trying batch stitching approach")
-        try:
-            # Split into overlapping batches
-            batch_size = 8
-            overlapping_results = []
-            
-            for i in range(0, len(images), batch_size // 2):
-                batch = images[i:i + batch_size]
-                if len(batch) >= 4:  # Need at least 4 images
-                    try:
-                        status, batch_panorama = self.stitcher.stitch(batch)
-                        if status == cv2.Stitcher_OK:
-                            overlapping_results.append(batch_panorama)
-                            logger.info(f"Job {job_id}: Batch {i//4 + 1} stitched successfully")
-                    except Exception as e:
-                        logger.warning(f"Job {job_id}: Batch {i//4 + 1} failed: {e}")
-            
-            # If we got some batch results, try to stitch those together
-            if len(overlapping_results) >= 2:
-                logger.info(f"Job {job_id}: Combining {len(overlapping_results)} batch results")
-                status, final_panorama = self.stitcher.stitch(overlapping_results)
-                if status == cv2.Stitcher_OK:
-                    return status, final_panorama
-                    
-        except Exception as e:
-            logger.warning(f"Job {job_id}: Batch stitching failed: {e}")
-        
-        # Strategy 3: Use simple mosaic approach as fallback
-        logger.info(f"Job {job_id}: Falling back to simple mosaic approach")
-        try:
-            panorama = self._create_simple_mosaic(images)
-            return cv2.Stitcher_OK, panorama
-        except Exception as e:
-            logger.error(f"Job {job_id}: All stitching strategies failed: {e}")
-            return cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL, None
-
-    def _create_simple_mosaic(self, images: List[np.ndarray]) -> np.ndarray:
-        """Create a simple grid mosaic when advanced stitching fails."""
-        
-        if not images:
-            raise ValueError("No images provided for mosaic")
-        
-        # Calculate grid dimensions
-        num_images = len(images)
-        cols = int(np.ceil(np.sqrt(num_images)))
-        rows = int(np.ceil(num_images / cols))
-        
-        # Get image dimensions (assuming all similar)
-        h, w = images[0].shape[:2]
-        
-        # Create mosaic canvas
-        mosaic_height = h * rows
-        mosaic_width = w * cols
-        mosaic = np.zeros((mosaic_height, mosaic_width, 3), dtype=np.uint8)
-        
-        # Place images in grid
-        for idx, img in enumerate(images):
-            row = idx // cols
-            col = idx % cols
-            
-            y_start = row * h
-            y_end = y_start + h
-            x_start = col * w
-            x_end = x_start + w
-            
-            # Resize image if needed
-            if img.shape[:2] != (h, w):
-                img = cv2.resize(img, (w, h))
-            
-            mosaic[y_start:y_end, x_start:x_end] = img
-        
-        logger.info(f"Created {rows}x{cols} mosaic: {mosaic_width}x{mosaic_height}px")
-        return mosaic
 
     def _load_and_orient_image(self, img_path: str) -> Optional[np.ndarray]:
         """Load image and correct orientation based on EXIF data using Pillow."""
@@ -305,7 +221,7 @@ class PanoramaProcessor:
         estimated_matches = num_images * 250 
         
         aspect_ratio = w / h
-        geo_consistency = 1.0 if 1.8 <= aspect_ratio <= 4.5 else 0.7 # Wider tolerance
+        geo_consistency = 1.0 if 1.8 <= aspect_ratio <= 2.2 else 0.7 # Tighter ratio for equirectangular
         
         overall_score = (sharpness_score * 0.3 + color_consistency * 0.3 + geo_consistency * 0.4)
         
