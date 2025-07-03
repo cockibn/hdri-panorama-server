@@ -99,8 +99,10 @@ class PanoramaProcessor:
             output_path = OUTPUT_DIR / f"{job_id}_panorama.jpg"
             cv2.imwrite(str(output_path), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
             
+            # Use Railway production URL or local development URL
+            base_url = os.environ.get('BASE_URL', 'http://localhost:5001')
             self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Professional panorama ready!", 
-                                  result_url=f"http://localhost:5001/v1/panorama/result/{job_id}",
+                                  result_url=f"{base_url}/v1/panorama/result/{job_id}",
                                   quality_metrics=quality_metrics)
             
             return {"success": True, "output_path": str(output_path)}
@@ -155,6 +157,72 @@ class PanoramaProcessor:
                 if quality_metrics:
                     jobs[job_id]["qualityMetrics"] = quality_metrics
 
+def extract_bundle_images(bundle_file, upload_dir):
+    """Extract images from our custom bundle format"""
+    try:
+        # Read the bundle data
+        bundle_data = bundle_file.read()
+        logger.info(f"Bundle size: {len(bundle_data)} bytes")
+        
+        # Parse bundle header
+        data_offset = 0
+        header_end = bundle_data.find(b'\n', data_offset)
+        if header_end == -1:
+            raise ValueError("Invalid bundle format - no header found")
+        
+        magic = bundle_data[data_offset:header_end].decode('utf-8')
+        if magic != "HDRI_BUNDLE_V1":
+            raise ValueError(f"Invalid bundle format - expected HDRI_BUNDLE_V1, got {magic}")
+        
+        data_offset = header_end + 1
+        
+        # Parse image count
+        count_end = bundle_data.find(b'\n', data_offset)
+        if count_end == -1:
+            raise ValueError("Invalid bundle format - no image count found")
+        
+        image_count = int(bundle_data[data_offset:count_end].decode('utf-8'))
+        logger.info(f"Bundle contains {image_count} images")
+        
+        data_offset = count_end + 1
+        
+        # Extract images
+        image_files = []
+        for i in range(image_count):
+            # Parse image header: "index:size\n"
+            header_end = bundle_data.find(b'\n', data_offset)
+            if header_end == -1:
+                raise ValueError(f"Invalid bundle format - no header for image {i}")
+            
+            header = bundle_data[data_offset:header_end].decode('utf-8')
+            index, size_str = header.split(':')
+            size = int(size_str)
+            
+            data_offset = header_end + 1
+            
+            # Extract image data
+            image_data = bundle_data[data_offset:data_offset + size]
+            if len(image_data) != size:
+                raise ValueError(f"Invalid bundle format - expected {size} bytes for image {i}, got {len(image_data)}")
+            
+            # Save image file
+            filename = f"image_{index}.jpg"
+            filepath = upload_dir / filename
+            with open(filepath, 'wb') as f:
+                f.write(image_data)
+            
+            image_files.append(str(filepath))
+            logger.info(f"Extracted image {index}: {size} bytes -> {filename}")
+            
+            data_offset += size
+        
+        logger.info(f"Successfully extracted {len(image_files)} images from bundle")
+        return image_files
+        
+    except Exception as e:
+        logger.error(f"Failed to extract bundle images: {str(e)}")
+        return []
+
 # Global processor instance
 processor = PanoramaProcessor()
 
@@ -185,14 +253,22 @@ def process_panorama():
         upload_dir = UPLOAD_DIR / job_id
         upload_dir.mkdir(exist_ok=True)
         
-        for key in request.files:
-            if key.startswith('image_'):
-                file = request.files[key]
-                if file and file.filename:
-                    filename = secure_filename(f"{key}.jpg")
-                    filepath = upload_dir / filename
-                    file.save(str(filepath))
-                    image_files.append(str(filepath))
+        # Check for compressed bundle format (new format)
+        if 'images_zip' in request.files:
+            bundle_file = request.files['images_zip']
+            if bundle_file and bundle_file.filename:
+                logger.info(f"Processing compressed bundle: {bundle_file.filename}")
+                image_files = extract_bundle_images(bundle_file, upload_dir)
+        else:
+            # Legacy individual file format
+            for key in request.files:
+                if key.startswith('image_'):
+                    file = request.files[key]
+                    if file and file.filename:
+                        filename = secure_filename(f"{key}.jpg")
+                        filepath = upload_dir / filename
+                        file.save(str(filepath))
+                        image_files.append(str(filepath))
         
         if not image_files:
             return jsonify({"error": "No images uploaded"}), 400
