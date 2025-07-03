@@ -697,7 +697,7 @@ class HuginPanoramaStitcher:
         return output_file
     
     def _stitch_with_nona(self, project_file: str) -> str:
-        """Stitch panorama using nona"""
+        """Stitch panorama using nona with standard presets"""
         output_prefix = os.path.join(self.temp_dir, "panorama")
         
         # First, use nona to create remapped images
@@ -720,20 +720,48 @@ class HuginPanoramaStitcher:
         
         # Sort files by name to ensure correct order
         tiff_files.sort()
+        logger.info(f"Generated {len(tiff_files)} panorama tiles for blending")
         
-        # Use enblend to blend the images
+        # Use enblend with settings optimized for high-overlap panoramas
         output_file = os.path.join(self.temp_dir, "final_panorama.tif")
         
         command = [
             "enblend",
             "-o", output_file,
             "--compression=LZW",
-            "--wrap=horizontal"
+            "--wrap=horizontal",
+            "--blend-colorspace=CIELAB",  # Better color blending
+            "--no-optimize",              # Disable optimization that fails with high overlap
+            "--fine-mask",                # Use fine mask for better seams
+            "--exposure-cutoff=0.3",      # More permissive exposure matching
+            "--hard-mask"                 # Use hard mask to handle excessive overlap
         ] + tiff_files
         
-        self._run_hugin_command(command, timeout=1200)  # 20 minute timeout
+        try:
+            self._run_hugin_command(command, timeout=1200)  # 20 minute timeout
+        except RuntimeError as e:
+            if "excessive image overlap" in str(e):
+                logger.warning("Standard enblend failed due to excessive overlap, trying simplified approach")
+                
+                # Fallback: Use enfuse instead of enblend for high-overlap situations
+                command_fallback = [
+                    "enfuse",
+                    "-o", output_file,
+                    "--compression=LZW",
+                    "--wrap=horizontal",
+                    "--exposure-weight=0",    # Disable exposure fusion
+                    "--saturation-weight=0",  # Disable saturation fusion  
+                    "--contrast-weight=1",    # Only use contrast for blending
+                    "--hard-mask"             # Handle overlap better
+                ] + tiff_files
+                
+                self._run_hugin_command(command_fallback, timeout=1200)
+                logger.info("Panorama stitching completed using enfuse fallback")
+            else:
+                raise
+        else:
+            logger.info("Panorama stitching completed using enblend")
         
-        logger.info("Panorama stitching completed")
         return output_file
     
     def _calculate_quality_metrics(self, panorama: np.ndarray, project_file: str, 
