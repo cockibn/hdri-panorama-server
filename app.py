@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max upload
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching
 
 # Server configuration
 UPLOAD_DIR = Path("uploads")
@@ -68,19 +69,10 @@ class PanoramaProcessor:
         # 1. Use the correct mode for 360° panoramas
         self.stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
         
-        # 2. Explicitly configure the stitcher to use a spherical warper.
-        # This is the most critical step for creating a correct 360° photo sphere.
-        # We calculate a suitable focal length based on typical phone camera FoV.
-        # For a ~120° ultra-wide FoV, the focal length is ~0.6 * image_width.
-        # We pass this default; the stitcher will refine it.
-        try:
-            # For modern OpenCV (4.x)
-            spherical_warper = cv2.SphericalWarper()
-            self.stitcher.setWarper(spherical_warper)
-        except AttributeError:
-            # Older OpenCV versions might not have this setter, but PANORAMA mode
-            # should default to a spherical-like warper.
-            logger.warning("Could not set spherical warper. Relying on default PANORAMA mode settings.")
+        # 2. Configure for 360° panorama stitching
+        # PANORAMA mode should automatically use appropriate settings for spherical output
+        # Additional configuration can be added here if needed
+        logger.info("Stitcher configured for 360° panorama mode")
             
         # Optional: Set a different feature detector if needed (e.g., ORB for speed, SIFT for accuracy)
         # self.stitcher.setFeaturesFinder(cv2.SIFT_create()) # Requires opencv-contrib-python
@@ -111,8 +103,13 @@ class PanoramaProcessor:
             logger.info(f"Job {job_id}: Starting robust stitching with {len(images)} images.")
             self._update_job_status(job_id, JobState.PROCESSING, 0.5, "Stitching 360° panorama with OpenCV...")
 
-            # 3. Perform the stitch. No complex fallbacks needed with correct configuration.
-            status, panorama = self.stitcher.stitch(images)
+            # 3. Perform the stitch with proper error handling
+            try:
+                status, panorama = self.stitcher.stitch(images)
+                logger.info(f"Job {job_id}: Stitcher returned status code: {status}")
+            except Exception as stitch_error:
+                logger.error(f"Job {job_id}: Stitcher crashed with error: {stitch_error}")
+                raise RuntimeError(f"Stitching process crashed: {str(stitch_error)}")
 
             if status != cv2.Stitcher_OK:
                 error_messages = {
@@ -127,9 +124,16 @@ class PanoramaProcessor:
             self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Cropping and finalizing panorama...")
 
             result = self._crop_black_borders(panorama)
-
+            
+            # Store count before cleanup
+            images_count = len(images)
+            
+            # Clean up memory
+            del panorama
+            del images
+            
             processing_time = round(time.time() - start_time, 2)
-            quality_metrics = self._calculate_stitching_quality(result, len(images))
+            quality_metrics = self._calculate_stitching_quality(result, images_count)
             quality_metrics["processingTime"] = processing_time
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Saving processed panorama...")
