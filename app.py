@@ -90,33 +90,67 @@ class PanoramaProcessor:
             # Extract capture point data
             capture_points = session_data.get('capturePoints', [])
             
-            # Now with 8GB RAM, we can use proper OpenCV panorama stitching
-            self._update_job_status(job_id, JobState.PROCESSING, 0.4, "Initializing OpenCV panorama stitcher...")
+            # Preprocess images for better stitching with ultra-wide cameras
+            self._update_job_status(job_id, JobState.PROCESSING, 0.4, "Preprocessing ultra-wide images...")
             
-            # Use OpenCV's built-in panorama stitcher with optimized settings
-            stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
+            # Resize images to more manageable size and fix potential issues
+            processed_images = []
+            target_width = 1920  # Reduce from full resolution to avoid LAPACK errors
             
-            # Configure stitcher for better results with ultra-wide images
-            stitcher.setPanoConfidenceThresh(0.3)  # Lower threshold for ultra-wide
-            
-            self._update_job_status(job_id, JobState.PROCESSING, 0.5, "Detecting features and matching images...")
-            
-            # Log image information
-            logger.info(f"Processing {len(images)} images for panorama stitching")
             for i, img in enumerate(images):
-                logger.info(f"Image {i}: {img.shape[1]}x{img.shape[0]} pixels")
+                # Resize maintaining aspect ratio
+                height, width = img.shape[:2]
+                if width > target_width:
+                    scale = target_width / width
+                    new_width = target_width
+                    new_height = int(height * scale)
+                    resized = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                else:
+                    resized = img.copy()
+                
+                # Ensure image is in correct format and fix any data issues
+                if len(resized.shape) == 3 and resized.shape[2] == 3:
+                    # Convert to uint8 if needed
+                    if resized.dtype != np.uint8:
+                        resized = np.clip(resized, 0, 255).astype(np.uint8)
+                    processed_images.append(resized)
+                    logger.info(f"Processed image {i}: {resized.shape[1]}x{resized.shape[0]} pixels")
+                else:
+                    logger.warning(f"Skipping image {i}: invalid format {resized.shape}")
             
-            self._update_job_status(job_id, JobState.PROCESSING, 0.7, "Stitching panorama with OpenCV...")
+            if len(processed_images) < 4:
+                raise Exception(f"Only {len(processed_images)} valid images found, need at least 4 for stitching")
             
-            # Perform the stitching
-            status, result = stitcher.stitch(images)
+            self._update_job_status(job_id, JobState.PROCESSING, 0.5, "Initializing panorama stitcher...")
+            
+            # Try with SCANS mode first (more robust for challenging images)
+            try:
+                stitcher = cv2.Stitcher.create(cv2.Stitcher_SCANS)
+                stitcher.setPanoConfidenceThresh(0.3)
+                
+                self._update_job_status(job_id, JobState.PROCESSING, 0.7, "Stitching with SCANS mode...")
+                status, result = stitcher.stitch(processed_images)
+                
+                if status != cv2.Stitcher_OK:
+                    logger.info("SCANS mode failed, trying PANORAMA mode...")
+                    raise Exception("SCANS failed, trying PANORAMA")
+                    
+            except Exception as e:
+                logger.info(f"SCANS mode failed: {e}, falling back to PANORAMA mode")
+                
+                # Fallback to PANORAMA mode
+                stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
+                stitcher.setPanoConfidenceThresh(0.1)  # Even lower threshold
+                
+                self._update_job_status(job_id, JobState.PROCESSING, 0.7, "Stitching with PANORAMA mode...")
+                status, result = stitcher.stitch(processed_images)
             
             if status == cv2.Stitcher_OK:
                 self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Panorama stitching completed successfully!")
                 logger.info(f"Stitching successful! Result size: {result.shape[1]}x{result.shape[0]}")
                 
                 # Calculate actual quality metrics based on result
-                quality_metrics = self._calculate_stitching_quality(result, len(images))
+                quality_metrics = self._calculate_stitching_quality(result, len(processed_images))
                 
             elif status == cv2.Stitcher_ERR_NEED_MORE_IMGS:
                 raise Exception("Need more images for stitching - ensure good overlap between images")
