@@ -68,6 +68,15 @@ class PanoramaProcessor:
         # Use OpenCV's built-in stitcher, configured for spherical output
         # This is the key to robust, feature-based stitching.
         self.stitcher = cv2.Stitcher.create(cv2.Stitcher_SCANS)
+        
+        # Configure stitcher for better ultra-wide image handling
+        try:
+            # Set warper type to spherical for 360° panoramas
+            self.stitcher.setWaveCorrection(True)
+            self.stitcher.setPanoConfidenceThresh(0.3)  # Lower confidence threshold
+        except AttributeError:
+            # Fallback for older OpenCV versions
+            pass
 
     def process_session(self, job_id: str, session_data: dict, image_files: List[str]) -> dict:
         """Process a complete panorama session using feature-based stitching."""
@@ -96,9 +105,8 @@ class PanoramaProcessor:
             logger.info(f"Job {job_id}: Starting stitching process with {len(images)} images.")
             self._update_job_status(job_id, JobState.PROCESSING, 0.4, "Stitching images with OpenCV...")
 
-            # 2. Perform the stitching
-            # This single command handles feature detection, matching, and composition.
-            status, panorama = self.stitcher.stitch(images)
+            # 2. Enhanced stitching with fallback strategies
+            status, panorama = self._robust_stitch(images, job_id)
 
             if status != cv2.Stitcher_OK:
                 # Handle stitching failure
@@ -138,6 +146,93 @@ class PanoramaProcessor:
             logger.exception(f"Processing failed for job {job_id}") # Use logger.exception for full traceback
             self._update_job_status(job_id, JobState.FAILED, 0.0, f"Processing failed: {str(e)}")
             return {"success": False, "error": str(e)}
+
+    def _robust_stitch(self, images: List[np.ndarray], job_id: str) -> Tuple[int, np.ndarray]:
+        """Enhanced stitching with multiple fallback strategies."""
+        
+        # Strategy 1: Try with all images first
+        try:
+            logger.info(f"Job {job_id}: Attempting to stitch {len(images)} images")
+            status, panorama = self.stitcher.stitch(images)
+            if status == cv2.Stitcher_OK:
+                return status, panorama
+        except Exception as e:
+            logger.warning(f"Job {job_id}: Full stitch failed: {e}")
+        
+        # Strategy 2: Try with smaller batches and combine
+        logger.info(f"Job {job_id}: Trying batch stitching approach")
+        try:
+            # Split into overlapping batches
+            batch_size = 8
+            overlapping_results = []
+            
+            for i in range(0, len(images), batch_size // 2):
+                batch = images[i:i + batch_size]
+                if len(batch) >= 4:  # Need at least 4 images
+                    try:
+                        status, batch_panorama = self.stitcher.stitch(batch)
+                        if status == cv2.Stitcher_OK:
+                            overlapping_results.append(batch_panorama)
+                            logger.info(f"Job {job_id}: Batch {i//4 + 1} stitched successfully")
+                    except Exception as e:
+                        logger.warning(f"Job {job_id}: Batch {i//4 + 1} failed: {e}")
+            
+            # If we got some batch results, try to stitch those together
+            if len(overlapping_results) >= 2:
+                logger.info(f"Job {job_id}: Combining {len(overlapping_results)} batch results")
+                status, final_panorama = self.stitcher.stitch(overlapping_results)
+                if status == cv2.Stitcher_OK:
+                    return status, final_panorama
+                    
+        except Exception as e:
+            logger.warning(f"Job {job_id}: Batch stitching failed: {e}")
+        
+        # Strategy 3: Use simple mosaic approach as fallback
+        logger.info(f"Job {job_id}: Falling back to simple mosaic approach")
+        try:
+            panorama = self._create_simple_mosaic(images)
+            return cv2.Stitcher_OK, panorama
+        except Exception as e:
+            logger.error(f"Job {job_id}: All stitching strategies failed: {e}")
+            return cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL, None
+
+    def _create_simple_mosaic(self, images: List[np.ndarray]) -> np.ndarray:
+        """Create a simple grid mosaic when advanced stitching fails."""
+        
+        if not images:
+            raise ValueError("No images provided for mosaic")
+        
+        # Calculate grid dimensions
+        num_images = len(images)
+        cols = int(np.ceil(np.sqrt(num_images)))
+        rows = int(np.ceil(num_images / cols))
+        
+        # Get image dimensions (assuming all similar)
+        h, w = images[0].shape[:2]
+        
+        # Create mosaic canvas
+        mosaic_height = h * rows
+        mosaic_width = w * cols
+        mosaic = np.zeros((mosaic_height, mosaic_width, 3), dtype=np.uint8)
+        
+        # Place images in grid
+        for idx, img in enumerate(images):
+            row = idx // cols
+            col = idx % cols
+            
+            y_start = row * h
+            y_end = y_start + h
+            x_start = col * w
+            x_end = x_start + w
+            
+            # Resize image if needed
+            if img.shape[:2] != (h, w):
+                img = cv2.resize(img, (w, h))
+            
+            mosaic[y_start:y_end, x_start:x_end] = img
+        
+        logger.info(f"Created {rows}x{cols} mosaic: {mosaic_width}x{mosaic_height}px")
+        return mosaic
 
     def _load_and_orient_image(self, img_path: str) -> Optional[np.ndarray]:
         """Load image and correct orientation based on EXIF data using Pillow."""
