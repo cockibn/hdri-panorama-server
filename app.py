@@ -314,6 +314,11 @@ def health_check():
 if __name__ == '__main__':
     print("🌍 HDRi 360 Studio - OpenCV Panorama Processing Server")
     
+    # Create required directories if they don't exist
+    os.makedirs('uploads', exist_ok=True)
+    os.makedirs('outputs', exist_ok=True)
+    os.makedirs('temp', exist_ok=True)
+    
     # Use PORT environment variable for cloud deployment, fallback to 5001 for local
     port = int(os.environ.get('PORT', 5001))
     host = '0.0.0.0'
