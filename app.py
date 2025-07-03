@@ -97,8 +97,8 @@ class PanoramaProcessor:
             pano_width = 4096   # 4K horizontal resolution
             pano_height = 2048  # 2K vertical (2:1 aspect for equirectangular)
             
-            # Initialize empty panorama canvas
-            panorama = np.zeros((pano_height, pano_width, 3), dtype=np.uint8)
+            # Initialize empty panorama canvas with float32 for blending
+            panorama = np.zeros((pano_height, pano_width, 3), dtype=np.float32)
             weight_map = np.zeros((pano_height, pano_width), dtype=np.float32)
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.5, "Mapping images to spherical coordinates...")
@@ -130,10 +130,11 @@ class PanoramaProcessor:
             self._update_job_status(job_id, JobState.PROCESSING, 0.85, "Blending overlapping regions...")
             
             # Normalize by weight map to blend overlapping regions
-            for y in range(pano_height):
-                for x in range(pano_width):
-                    if weight_map[y, x] > 0:
-                        panorama[y, x] = panorama[y, x] / weight_map[y, x]
+            mask = weight_map > 0
+            panorama[mask] = panorama[mask] / weight_map[mask, np.newaxis]
+            
+            # Convert back to uint8
+            panorama = np.clip(panorama, 0, 255).astype(np.uint8)
             
             # Fill any gaps with nearby pixels
             result = self._fill_gaps(panorama)
@@ -296,8 +297,9 @@ class PanoramaProcessor:
                 # Blend pixel into panorama with distance-based weighting
                 weight = 1.0  # Could add distance-based weighting here
                 
-                # Add to panorama (weighted average)
-                panorama[eq_y, eq_x] += img[y, x] * weight
+                # Convert pixel to float32 and add to panorama
+                pixel = img[y, x].astype(np.float32)
+                panorama[eq_y, eq_x] += pixel * weight
                 weight_map[eq_y, eq_x] += weight
     
     def _fill_gaps(self, panorama):
