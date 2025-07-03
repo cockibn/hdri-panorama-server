@@ -226,81 +226,121 @@ class PanoramaProcessor:
             elevation = point.get('elevation', 0.0)
             return azimuth, elevation
         
-        # Otherwise, use standard 16-point spherical distribution
-        # 2 poles + 4 elevation bands with quincunx pattern
+        # Optimized 16-point pattern that matches iOS app's SphericalGeometry
+        # This provides better coverage for ultra-wide 120° FOV images
         
-        if image_index == 0:  # Top pole
-            return 0.0, 90.0
-        elif image_index == 1:  # Bottom pole  
-            return 0.0, -90.0
+        patterns = [
+            # Bottom hemisphere (good for handheld capture)
+            (0.0, -30.0),    # 0: Forward down
+            (90.0, -30.0),   # 1: Right down  
+            (180.0, -30.0),  # 2: Back down
+            (270.0, -30.0),  # 3: Left down
+            
+            # Mid-low level with offset
+            (45.0, -15.0),   # 4: Forward-right low
+            (135.0, -15.0),  # 5: Back-right low
+            (225.0, -15.0),  # 6: Back-left low
+            (315.0, -15.0),  # 7: Forward-left low
+            
+            # Horizon level
+            (0.0, 0.0),      # 8: Forward
+            (90.0, 0.0),     # 9: Right
+            (180.0, 0.0),    # 10: Back
+            (270.0, 0.0),    # 11: Left
+            
+            # Upper level with offset
+            (45.0, 30.0),    # 12: Forward-right up
+            (135.0, 30.0),   # 13: Back-right up
+            (225.0, 30.0),   # 14: Back-left up
+            (315.0, 30.0),   # 15: Forward-left up
+        ]
+        
+        if image_index < len(patterns):
+            azimuth, elevation = patterns[image_index]
+            logger.info(f"Image {image_index}: azimuth={azimuth}°, elevation={elevation}°")
+            return azimuth, elevation
         else:
-            # 14 images distributed in 4 elevation bands (3.5 images per band)
-            remaining_idx = image_index - 2
-            
-            # 4 elevation bands: 60°, 20°, -20°, -60°
-            elevations = [60.0, 20.0, -20.0, -60.0]
-            
-            # Distribute ~3.5 images per elevation band
-            band = remaining_idx // 4  # 0, 1, 2, 3
-            pos_in_band = remaining_idx % 4
-            
-            if band < len(elevations):
-                elevation = elevations[band]
-                # Distribute azimuth angles with quincunx offset
-                base_azimuth = pos_in_band * 90.0  # 0°, 90°, 180°, 270°
-                # Offset alternating bands by 45° for better coverage
-                if band % 2 == 1:
-                    base_azimuth += 45.0
-                azimuth = base_azimuth % 360.0
-                return azimuth, elevation
-            else:
-                # Fallback for extra images
-                return (remaining_idx * 25.7) % 360.0, 0.0
+            # Fallback for extra images
+            return (image_index * 22.5) % 360.0, 0.0
     
     def _project_to_equirectangular(self, img, panorama, weight_map, azimuth, elevation, pano_width, pano_height):
-        """Project ultra-wide image to equirectangular coordinates"""
+        """Project ultra-wide image to equirectangular coordinates with proper spherical math"""
         
         img_height, img_width = img.shape[:2]
-        
-        # Ultra-wide camera field of view (120° horizontal, ~90° vertical)
-        fov_h = np.radians(120.0)  # Horizontal FOV
-        fov_v = np.radians(90.0)   # Vertical FOV
         
         # Convert capture angles to radians
         center_azimuth = np.radians(azimuth)
         center_elevation = np.radians(elevation)
         
-        # For each pixel in the source image
-        for y in range(0, img_height, 2):  # Skip every other pixel for performance
-            for x in range(0, img_width, 2):
-                
-                # Convert image coordinates to angular coordinates relative to image center
-                norm_x = (x - img_width/2) / (img_width/2)   # -1 to 1
-                norm_y = (y - img_height/2) / (img_height/2) # -1 to 1
-                
-                # Map to spherical angles relative to camera direction
-                local_azimuth = norm_x * fov_h / 2
-                local_elevation = norm_y * fov_v / 2
-                
-                # Rotate to world coordinates
-                world_azimuth = center_azimuth + local_azimuth
-                world_elevation = center_elevation + local_elevation
-                
-                # Clamp elevation to valid range
-                world_elevation = max(-np.pi/2, min(np.pi/2, world_elevation))
-                
-                # Convert to equirectangular coordinates
-                eq_x = int((world_azimuth + np.pi) / (2 * np.pi) * pano_width) % pano_width
-                eq_y = int((np.pi/2 - world_elevation) / np.pi * pano_height)
-                eq_y = max(0, min(pano_height - 1, eq_y))
-                
-                # Blend pixel into panorama with distance-based weighting
-                weight = 1.0  # Could add distance-based weighting here
-                
-                # Convert pixel to float32 and add to panorama
-                pixel = img[y, x].astype(np.float32)
-                panorama[eq_y, eq_x] += pixel * weight
-                weight_map[eq_y, eq_x] += weight
+        # Create coordinate grids for vectorized operations
+        y_coords, x_coords = np.mgrid[0:img_height, 0:img_width]
+        
+        # Normalize coordinates to [-1, 1] range
+        norm_x = (x_coords - img_width/2) / (img_width/2)
+        norm_y = (y_coords - img_height/2) / (img_height/2)
+        
+        # Apply fisheye/ultra-wide lens correction
+        # Convert to polar coordinates for lens distortion
+        r = np.sqrt(norm_x**2 + norm_y**2)
+        theta = np.arctan2(norm_y, norm_x)
+        
+        # Ultra-wide lens: map radius to field of view (120° diagonal)
+        max_fov = np.radians(60)  # 60° radius for 120° diagonal FOV
+        
+        # Only process pixels within the circular fisheye area
+        valid_mask = r <= 1.0
+        
+        # Convert radius to 3D sphere coordinates
+        phi = r * max_fov  # Angle from optical axis
+        
+        # Convert to 3D unit vector on sphere
+        x_3d = np.sin(phi) * np.cos(theta)
+        y_3d = np.sin(phi) * np.sin(theta) 
+        z_3d = np.cos(phi)
+        
+        # Rotate by camera orientation (azimuth and elevation)
+        # Rotation around Y axis (azimuth)
+        cos_az, sin_az = np.cos(center_azimuth), np.sin(center_azimuth)
+        x_rot = x_3d * cos_az - z_3d * sin_az
+        z_rot = x_3d * sin_az + z_3d * cos_az
+        y_rot = y_3d
+        
+        # Rotation around X axis (elevation)  
+        cos_el, sin_el = np.cos(center_elevation), np.sin(center_elevation)
+        y_final = y_rot * cos_el - z_rot * sin_el
+        z_final = y_rot * sin_el + z_rot * cos_el
+        x_final = x_rot
+        
+        # Convert back to spherical coordinates
+        world_elevation = np.arcsin(np.clip(y_final, -1, 1))
+        world_azimuth = np.arctan2(x_final, z_final)
+        
+        # Convert to equirectangular coordinates
+        eq_x = ((world_azimuth + np.pi) / (2 * np.pi) * pano_width).astype(int) % pano_width
+        eq_y = ((np.pi/2 - world_elevation) / np.pi * pano_height).astype(int)
+        eq_y = np.clip(eq_y, 0, pano_height - 1)
+        
+        # Only process valid pixels (within fisheye circle)
+        valid_indices = np.where(valid_mask)
+        
+        # Use higher resolution sampling - every pixel, not every other
+        sample_step = 1  # Full resolution
+        
+        for i in range(0, len(valid_indices[0]), sample_step):
+            y_idx = valid_indices[0][i]
+            x_idx = valid_indices[1][i]
+            
+            eq_x_coord = eq_x[y_idx, x_idx]
+            eq_y_coord = eq_y[y_idx, x_idx]
+            
+            # Distance-based weighting for smoother blending
+            r_val = r[y_idx, x_idx]
+            weight = np.exp(-r_val * 0.5)  # Gaussian falloff from center
+            
+            # Convert pixel to float32 and add to panorama
+            pixel = img[y_idx, x_idx].astype(np.float32)
+            panorama[eq_y_coord, eq_x_coord] += pixel * weight
+            weight_map[eq_y_coord, eq_x_coord] += weight
     
     def _fill_gaps(self, panorama):
         """Fill any remaining gaps in the panorama using inpainting"""
