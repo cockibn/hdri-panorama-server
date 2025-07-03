@@ -69,21 +69,12 @@ class PanoramaProcessor:
     """
     
     def __init__(self):
-        # Initialize Hugin-based stitcher with fixed timeout handling
-        try:
-            self.stitcher = HuginPanoramaStitcher()
-            logger.info("Hugin-based stitcher initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize Hugin stitcher: {e}")
-            # Fallback to OpenCV stitcher
-            self.stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
-            logger.info("Fallback to OpenCV stitcher configured for 360° panorama mode")
-            self.use_hugin = False
-        else:
-            self.use_hugin = True
+        # Initialize Hugin-based stitcher
+        self.stitcher = HuginPanoramaStitcher()
+        logger.info("Hugin-based stitcher initialized successfully")
 
     def process_session(self, job_id: str, session_data: dict, image_files: List[str]) -> dict:
-        """Process a complete panorama session using Hugin or OpenCV as fallback."""
+        """Process a complete panorama session using Hugin."""
         
         start_time = time.time()
         try:
@@ -93,16 +84,8 @@ class PanoramaProcessor:
             for i, img_path in enumerate(image_files):
                 img = self._load_and_orient_image(img_path)
                 if img is not None:
-                    # For Hugin, we can use higher resolution images
-                    if self.use_hugin:
-                        images.append(img)
-                    else:
-                        # For OpenCV, resize for performance
-                        h, w = img.shape[:2]
-                        scale = 1024 / max(h, w)
-                        resized_img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-                        images.append(resized_img)
-                    
+                    # Use full resolution images for Hugin
+                    images.append(img)
                     progress = (i + 1) / len(image_files) * 0.3
                     self._update_job_status(job_id, JobState.PROCESSING, progress, f"Loaded image {i+1}/{len(image_files)}")
             
@@ -112,88 +95,16 @@ class PanoramaProcessor:
             # Extract capture points from session data
             capture_points = session_data.get('capturePoints', [])
             
-            if self.use_hugin:
-                logger.info(f"Job {job_id}: Starting Hugin stitching with {len(images)} images.")
-                self._update_job_status(job_id, JobState.PROCESSING, 0.3, "Stitching 360° panorama with Hugin...")
-                
-                try:
-                    # Use Hugin stitcher
-                    panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points)
-                    
-                    logger.info(f"Job {job_id}: Hugin stitching successful!")
-                    self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Finalizing panorama...")
-                    
-                    result = panorama
-                    
-                except Exception as hugin_error:
-                    logger.warning(f"Job {job_id}: Hugin stitching failed: {hugin_error}")
-                    logger.info(f"Job {job_id}: Falling back to OpenCV stitching")
-                    self._update_job_status(job_id, JobState.PROCESSING, 0.3, "Hugin failed, trying OpenCV fallback...")
-                    
-                    # Fallback to OpenCV
-                    opencv_stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
-                    
-                    # Resize images for OpenCV
-                    resized_images = []
-                    for img in images:
-                        h, w = img.shape[:2]
-                        scale = 1024 / max(h, w)
-                        resized_img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-                        resized_images.append(resized_img)
-                    
-                    status, panorama = opencv_stitcher.stitch(resized_images)
-                    
-                    if status != cv2.Stitcher_OK:
-                        error_messages = {
-                            cv2.Stitcher_ERR_NEED_MORE_IMGS: "Not enough images to stitch.",
-                            cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL: "Stitching failed. Ensure images have sufficient overlap and distinct features.",
-                            cv2.Stitcher_ERR_CAMERA_PARAMS_ADJUST_FAIL: "Could not adjust camera parameters during stitching."
-                        }
-                        error_message = error_messages.get(status, f"An unknown stitching error occurred (Code: {status}).")
-                        raise RuntimeError(f"Both Hugin and OpenCV stitching failed. OpenCV error: {error_message}")
-                    
-                    logger.info(f"Job {job_id}: OpenCV fallback stitching successful!")
-                    self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Cropping and finalizing panorama...")
-                    
-                    result = self._crop_black_borders(panorama)
-                    
-                    # Calculate quality metrics for OpenCV fallback
-                    processing_time = round(time.time() - start_time, 2)
-                    quality_metrics = self._calculate_stitching_quality(result, len(images))
-                    quality_metrics["processingTime"] = processing_time
-                    quality_metrics["processor"] = "OpenCV (Hugin fallback)"
-                
-            else:
-                logger.info(f"Job {job_id}: Starting OpenCV stitching with {len(images)} images.")
-                self._update_job_status(job_id, JobState.PROCESSING, 0.3, "Stitching 360° panorama with OpenCV...")
-                
-                # Use OpenCV stitcher (fallback)
-                try:
-                    status, panorama = self.stitcher.stitch(images)
-                    logger.info(f"Job {job_id}: OpenCV stitcher returned status code: {status}")
-                except Exception as stitch_error:
-                    logger.error(f"Job {job_id}: OpenCV stitcher crashed with error: {stitch_error}")
-                    raise RuntimeError(f"Stitching process crashed: {str(stitch_error)}")
-
-                if status != cv2.Stitcher_OK:
-                    error_messages = {
-                        cv2.Stitcher_ERR_NEED_MORE_IMGS: "Not enough images to stitch.",
-                        cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL: "Stitching failed. Ensure images have sufficient overlap and distinct features.",
-                        cv2.Stitcher_ERR_CAMERA_PARAMS_ADJUST_FAIL: "Could not adjust camera parameters during stitching."
-                    }
-                    error_message = error_messages.get(status, f"An unknown stitching error occurred (Code: {status}).")
-                    raise RuntimeError(error_message)
-
-                logger.info(f"Job {job_id}: OpenCV stitching successful!")
-                self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Cropping and finalizing panorama...")
-
-                result = self._crop_black_borders(panorama)
-                
-                # Calculate quality metrics for OpenCV
-                processing_time = round(time.time() - start_time, 2)
-                quality_metrics = self._calculate_stitching_quality(result, len(images))
-                quality_metrics["processingTime"] = processing_time
-                quality_metrics["processor"] = "OpenCV"
+            logger.info(f"Job {job_id}: Starting Hugin stitching with {len(images)} images.")
+            self._update_job_status(job_id, JobState.PROCESSING, 0.3, "Stitching 360° panorama with Hugin...")
+            
+            # Use Hugin stitcher
+            panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points)
+            
+            logger.info(f"Job {job_id}: Hugin stitching successful!")
+            self._update_job_status(job_id, JobState.PROCESSING, 0.9, "Finalizing panorama...")
+            
+            result = panorama
             
             # Clean up memory
             del images
