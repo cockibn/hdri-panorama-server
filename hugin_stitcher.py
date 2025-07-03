@@ -152,6 +152,13 @@ class HuginPanoramaStitcher:
             # Step 3: Find control points
             project_file = self._find_control_points(project_file)
             
+            # Check if we have any control points at all
+            with open(project_file, 'r') as f:
+                content = f.read()
+                if 'c n' not in content:
+                    logger.warning("No control points found after all attempts")
+                    raise RuntimeError("Insufficient control points for Hugin stitching")
+            
             # Step 4: Clean control points
             project_file = self._clean_control_points(project_file)
             
@@ -259,17 +266,68 @@ class HuginPanoramaStitcher:
             "--multirow",          # Enable multirow detection
             "--celeste",           # Use celeste for sky detection
             "--sift",              # Use SIFT detector
+            "--ransac-mode", "auto",  # Automatic RANSAC
+            "--ransac-threshold", "25",  # More lenient threshold
+            "--min-matches", "4",    # Minimum matches per pair
             project_file
         ]
         
-        self._run_hugin_command(command, timeout=600)  # 10 minute timeout
+        try:
+            self._run_hugin_command(command, timeout=600)  # 10 minute timeout
+            
+            # Verify the output file was created and has content
+            if not os.path.exists(output_file):
+                raise RuntimeError("cpfind did not create output file")
+            
+            # Check if file has control points
+            with open(output_file, 'r') as f:
+                content = f.read()
+                if 'c n' not in content:  # No control points found
+                    logger.warning("No control points found between images")
+                    # Try again with more lenient settings
+                    return self._find_control_points_fallback(project_file)
+            
+            logger.info("Control point detection completed")
+            return output_file
+            
+        except Exception as e:
+            logger.warning(f"Control point detection failed: {e}")
+            # Try fallback method
+            return self._find_control_points_fallback(project_file)
+    
+    def _find_control_points_fallback(self, project_file: str) -> str:
+        """Fallback control point detection with more lenient settings"""
+        output_file = os.path.join(self.temp_dir, "project_cp_fallback.pto")
         
-        logger.info("Control point detection completed")
+        command = [
+            "cpfind",
+            "-o", output_file,
+            "--sift",              # Use SIFT detector only
+            "--ransac-threshold", "50",  # Very lenient threshold
+            "--min-matches", "2",    # Very low minimum matches
+            project_file
+        ]
+        
+        self._run_hugin_command(command, timeout=600)
+        
+        logger.info("Fallback control point detection completed")
         return output_file
     
     def _clean_control_points(self, project_file: str) -> str:
         """Clean control points using cpclean"""
         output_file = os.path.join(self.temp_dir, "project_clean.pto")
+        
+        # First check if input file exists and has control points
+        if not os.path.exists(project_file):
+            logger.warning(f"Input file does not exist: {project_file}")
+            return project_file
+        
+        # Check if file has control points to clean
+        with open(project_file, 'r') as f:
+            content = f.read()
+            if 'c n' not in content:
+                logger.warning("No control points found to clean, skipping cpclean")
+                return project_file
         
         command = [
             "cpclean",
@@ -277,10 +335,13 @@ class HuginPanoramaStitcher:
             project_file
         ]
         
-        self._run_hugin_command(command)
-        
-        logger.info("Control point cleaning completed")
-        return output_file
+        try:
+            self._run_hugin_command(command)
+            logger.info("Control point cleaning completed")
+            return output_file
+        except Exception as e:
+            logger.warning(f"Control point cleaning failed: {e}, using uncleaned file")
+            return project_file
     
     def _find_vertical_lines(self, project_file: str) -> str:
         """Find vertical lines using linefind"""
