@@ -69,18 +69,23 @@ class PanoramaProcessor:
     """
     
     def __init__(self):
-        # Initialize Hugin-based stitcher
-        try:
-            self.stitcher = HuginPanoramaStitcher()
-            logger.info("Hugin-based stitcher initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize Hugin stitcher: {e}")
-            # Fallback to OpenCV stitcher
-            self.stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
-            logger.info("Fallback to OpenCV stitcher configured for 360° panorama mode")
-            self.use_hugin = False
-        else:
-            self.use_hugin = True
+        # Temporarily disable Hugin due to cpfind hanging issues
+        logger.info("Temporarily using OpenCV stitcher (Hugin disabled due to timeout issues)")
+        self.stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
+        self.use_hugin = False
+        
+        # Initialize Hugin-based stitcher (disabled)
+        # try:
+        #     self.stitcher = HuginPanoramaStitcher()
+        #     logger.info("Hugin-based stitcher initialized successfully")
+        # except Exception as e:
+        #     logger.error(f"Failed to initialize Hugin stitcher: {e}")
+        #     # Fallback to OpenCV stitcher
+        #     self.stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
+        #     logger.info("Fallback to OpenCV stitcher configured for 360° panorama mode")
+        #     self.use_hugin = False
+        # else:
+        #     self.use_hugin = True
 
     def process_session(self, job_id: str, session_data: dict, image_files: List[str]) -> dict:
         """Process a complete panorama session using Hugin or OpenCV as fallback."""

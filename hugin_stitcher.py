@@ -361,7 +361,7 @@ class HuginPanoramaStitcher:
         ]
         
         try:
-            stdout, stderr = self._run_hugin_command(command, timeout=600)  # 10 minute timeout
+            stdout, stderr = self._run_hugin_command(command, timeout=120)  # 2 minute timeout
             logger.info(f"cpfind stdout: {stdout}")
             logger.info(f"cpfind stderr: {stderr}")
             
@@ -406,7 +406,7 @@ class HuginPanoramaStitcher:
         ]
         
         try:
-            stdout, stderr = self._run_hugin_command(command, timeout=600)
+            stdout, stderr = self._run_hugin_command(command, timeout=60)  # 1 minute timeout for fallback
             logger.info(f"cpfind fallback stdout: {stdout}")
             logger.info(f"cpfind fallback stderr: {stderr}")
             
