@@ -313,7 +313,12 @@ def health_check():
 
 if __name__ == '__main__':
     print("🌍 HDRi 360 Studio - OpenCV Panorama Processing Server")
-    print("🚀 Starting server on http://localhost:5001")
+    
+    # Use PORT environment variable for cloud deployment, fallback to 5001 for local
+    port = int(os.environ.get('PORT', 5001))
+    host = '0.0.0.0'
+    
+    print(f"🚀 Starting server on {host}:{port}")
     print("📸 Ready to process ultra-wide 360° panoramas!")
     
-    app.run(host='0.0.0.0', port=5001, debug=True, threaded=True)
+    app.run(host=host, port=port, debug=False, threaded=True)
