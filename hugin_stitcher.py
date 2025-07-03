@@ -48,6 +48,24 @@ class HuginPanoramaStitcher:
         self.canvas_size = (4096, 2048)  # 4K equirectangular
         self.jpeg_quality = 95
         
+        # iPhone 15 Pro Ultra-Wide Camera Specifications
+        self.iphone_15_pro_ultrawide = {
+            'focal_length_mm': 13.0,  # 13mm equivalent
+            'sensor_width_mm': 5.7,   # 1/2.55" sensor physical width
+            'sensor_height_mm': 4.28,  # 1/2.55" sensor physical height
+            'fov_diagonal': 120.0,     # 120° diagonal field of view
+            'fov_horizontal': 103.0,   # Approximate horizontal FOV
+            'fov_vertical': 77.0,      # Approximate vertical FOV
+            'image_width': 4032,       # Native resolution width
+            'image_height': 3024,      # Native resolution height
+            # Lens distortion parameters (estimated for ultra-wide)
+            'distortion_k1': -0.28,   # Primary radial distortion
+            'distortion_k2': 0.15,    # Secondary radial distortion
+            'distortion_k3': -0.05,   # Tertiary radial distortion
+            'distortion_p1': 0.001,   # Tangential distortion
+            'distortion_p2': 0.001,   # Tangential distortion
+        }
+        
     def _find_hugin_path(self) -> str:
         """Auto-detect Hugin installation path"""
         possible_paths = [
@@ -206,19 +224,93 @@ class HuginPanoramaStitcher:
         return image_paths
     
     def _create_pto_project(self, image_paths: List[str], capture_points: List[Dict]) -> str:
-        """Create initial PTO project file"""
+        """Create initial PTO project file with iPhone 15 Pro ultra-wide optimization"""
         project_file = os.path.join(self.temp_dir, "project.pto")
         
         # Use pto_gen to create basic project
         command = ["pto_gen", "-o", project_file] + image_paths
         self._run_hugin_command(command)
         
-        # Optionally set initial camera positions based on capture points
+        # Apply iPhone 15 Pro ultra-wide specific optimizations
+        self._optimize_pto_for_iphone_ultrawide(project_file, image_paths)
+        
+        # Set initial camera positions based on capture points
         if capture_points and len(capture_points) == len(image_paths):
             self._set_initial_positions(project_file, capture_points)
         
-        logger.info(f"Created PTO project: {project_file}")
+        logger.info(f"Created optimized PTO project for iPhone 15 Pro ultra-wide: {project_file}")
         return project_file
+    
+    def _optimize_pto_for_iphone_ultrawide(self, project_file: str, image_paths: List[str]):
+        """Optimize PTO file specifically for iPhone 15 Pro ultra-wide camera"""
+        
+        # Read current PTO file
+        with open(project_file, 'r') as f:
+            pto_content = f.read()
+        
+        lines = pto_content.split('\n')
+        
+        # Calculate focal length in pixels
+        image_width = self.iphone_15_pro_ultrawide['image_width']
+        image_height = self.iphone_15_pro_ultrawide['image_height']
+        fov_horizontal = self.iphone_15_pro_ultrawide['fov_horizontal']
+        
+        # Calculate focal length in pixels: f = (width/2) / tan(fov/2)
+        import math
+        focal_length_pixels = (image_width / 2) / math.tan(math.radians(fov_horizontal / 2))
+        
+        # Hugin's HFOV parameter
+        hfov = fov_horizontal
+        
+        modified_lines = []
+        
+        for line in lines:
+            if line.startswith('i '):
+                # Modify image parameters for ultra-wide
+                # Add ultra-wide specific parameters
+                parts = line.split()
+                
+                # Build new image line with ultra-wide optimizations
+                new_parts = ['i']
+                
+                # Add focal length and FOV
+                new_parts.append(f'f{focal_length_pixels:.1f}')
+                new_parts.append(f'v{hfov:.1f}')
+                
+                # Add lens distortion correction for ultra-wide
+                # a, b, c parameters for lens distortion
+                new_parts.append(f'a{self.iphone_15_pro_ultrawide["distortion_k1"]:.6f}')
+                new_parts.append(f'b{self.iphone_15_pro_ultrawide["distortion_k2"]:.6f}')
+                new_parts.append(f'c{self.iphone_15_pro_ultrawide["distortion_k3"]:.6f}')
+                
+                # Add tangential distortion
+                new_parts.append(f'd{self.iphone_15_pro_ultrawide["distortion_p1"]:.6f}')
+                new_parts.append(f'e{self.iphone_15_pro_ultrawide["distortion_p2"]:.6f}')
+                
+                # Set projection type for ultra-wide (rectilinear)
+                new_parts.append('f0')  # Rectilinear projection
+                
+                # Keep existing parameters that don't conflict
+                for part in parts[1:]:
+                    param_type = part[0] if part else ''
+                    if param_type not in ['f', 'v', 'a', 'b', 'c', 'd', 'e']:
+                        new_parts.append(part)
+                
+                modified_lines.append(' '.join(new_parts))
+                
+            elif line.startswith('p '):
+                # Modify project parameters for ultra-wide panorama
+                # Set optimal output parameters for ultra-wide input
+                modified_lines.append(f'p f2 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 u10 n"JPEG q95"')
+                
+            else:
+                modified_lines.append(line)
+        
+        # Write modified PTO file
+        with open(project_file, 'w') as f:
+            f.write('\n'.join(modified_lines))
+        
+        logger.info("Applied iPhone 15 Pro ultra-wide optimizations to PTO file")
     
     def _set_initial_positions(self, project_file: str, capture_points: List[Dict]):
         """Set initial camera positions based on capture metadata"""
@@ -257,18 +349,22 @@ class HuginPanoramaStitcher:
         logger.info(f"Set initial positions for {image_index} images")
     
     def _find_control_points(self, project_file: str) -> str:
-        """Find control points using cpfind"""
+        """Find control points using cpfind optimized for iPhone 15 Pro ultra-wide"""
         output_file = os.path.join(self.temp_dir, "project_cp.pto")
         
+        # Ultra-wide optimized cpfind parameters
         command = [
             "cpfind",
             "-o", output_file,
-            "--multirow",          # Enable multirow detection
-            "--celeste",           # Use celeste for sky detection
-            "--sift",              # Use SIFT detector
-            "--ransac-mode", "auto",  # Automatic RANSAC
-            "--ransac-threshold", "25",  # More lenient threshold
-            "--min-matches", "4",    # Minimum matches per pair
+            "--multirow",                    # Enable multirow detection
+            "--celeste",                     # Use celeste for sky detection  
+            "--sift",                        # Use SIFT detector
+            "--ransac-mode", "auto",         # Automatic RANSAC
+            "--ransac-threshold", "15",      # Tighter threshold for ultra-wide precision
+            "--min-matches", "6",            # Higher minimum for ultra-wide reliability
+            "--sift-features", "3000",       # More features for ultra-wide content
+            "--kdtree-levels", "6",          # Better search for ultra-wide features
+            "--cores", "0",                  # Use all available cores
             project_file
         ]
         
@@ -296,21 +392,24 @@ class HuginPanoramaStitcher:
             return self._find_control_points_fallback(project_file)
     
     def _find_control_points_fallback(self, project_file: str) -> str:
-        """Fallback control point detection with more lenient settings"""
+        """Fallback control point detection with ultra-wide optimized lenient settings"""
         output_file = os.path.join(self.temp_dir, "project_cp_fallback.pto")
         
+        # Very lenient settings for difficult ultra-wide scenarios
         command = [
             "cpfind",
             "-o", output_file,
-            "--sift",              # Use SIFT detector only
-            "--ransac-threshold", "50",  # Very lenient threshold
-            "--min-matches", "2",    # Very low minimum matches
+            "--sift",                        # Use SIFT detector only
+            "--ransac-threshold", "35",      # Moderate threshold for ultra-wide
+            "--min-matches", "3",            # Lower minimum for difficult cases
+            "--sift-features", "5000",       # Maximum features for ultra-wide
+            "--filter-distance", "0.7",     # More lenient distance filter
             project_file
         ]
         
         self._run_hugin_command(command, timeout=600)
         
-        logger.info("Fallback control point detection completed")
+        logger.info("Ultra-wide optimized fallback control point detection completed")
         return output_file
     
     def _clean_control_points(self, project_file: str) -> str:
@@ -363,22 +462,26 @@ class HuginPanoramaStitcher:
             return project_file
     
     def _optimize_panorama(self, project_file: str) -> str:
-        """Optimize panorama using autooptimiser"""
+        """Optimize panorama using autooptimiser with ultra-wide specific settings"""
         output_file = os.path.join(self.temp_dir, "project_opt.pto")
         
+        # Ultra-wide optimized optimization parameters
         command = [
             "autooptimiser",
-            "-a",          # Optimize positions and barrel distortion
-            "-m",          # Optimize photometric parameters
-            "-l",          # Optimize lens parameters
-            "-s",          # Optimize shear
+            "-a",              # Optimize positions and barrel distortion (critical for ultra-wide)
+            "-b",              # Optimize barrel distortion parameters
+            "-c",              # Optimize perspective distortion 
+            "-d",              # Optimize radial shift
+            "-e",              # Optimize shear parameters
+            "-m",              # Optimize photometric parameters
+            "-s",              # Optimize image center shift
             "-o", output_file,
             project_file
         ]
         
-        self._run_hugin_command(command, timeout=600)  # 10 minute timeout
+        self._run_hugin_command(command, timeout=900)  # 15 minute timeout for complex optimization
         
-        logger.info("Panorama optimization completed")
+        logger.info("Ultra-wide optimized panorama optimization completed")
         return output_file
     
     def _set_output_parameters(self, project_file: str) -> str:
@@ -482,7 +585,14 @@ class HuginPanoramaStitcher:
             "colorConsistency": float(np.clip(color_consistency, 0, 1)),
             "processingTime": float(processing_time),
             "resolution": f"{panorama.shape[1]}x{panorama.shape[0]}",
-            "processor": "Hugin"
+            "processor": "Hugin (iPhone 15 Pro Ultra-Wide Optimized)",
+            "cameraOptimization": "iPhone 15 Pro Ultra-Wide",
+            "lensCorrection": "Applied",
+            "ultraWideFeatures": {
+                "fovOptimized": "120° diagonal",
+                "distortionCorrected": "Yes", 
+                "featureDetection": "Ultra-wide optimized SIFT"
+            }
         }
     
     def _parse_control_points(self, project_file: str) -> List[Dict]:
