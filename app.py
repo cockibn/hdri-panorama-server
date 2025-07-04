@@ -112,7 +112,20 @@ class PanoramaProcessor:
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Saving processed panorama...")
 
             output_path = OUTPUT_DIR / f"{job_id}_panorama.jpg"
-            cv2.imwrite(str(output_path), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            
+            # Ensure proper color space conversion for JPEG output
+            if len(result.shape) == 3 and result.shape[2] == 3:
+                # OpenCV uses BGR, convert to RGB for proper JPEG colors
+                result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+                
+                # Use PIL for better JPEG quality control
+                from PIL import Image
+                pil_image = Image.fromarray(result_rgb)
+                pil_image.save(str(output_path), 'JPEG', quality=95, optimize=True)
+                logger.info(f"Saved panorama as JPEG with RGB color space: {output_path}")
+            else:
+                # Fallback to OpenCV for non-standard images
+                cv2.imwrite(str(output_path), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
             
             base_url = os.environ.get('BASE_URL', 'https://hdri-panorama-server-production.up.railway.app')
             self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Professional panorama ready!", 

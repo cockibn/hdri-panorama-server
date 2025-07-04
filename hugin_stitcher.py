@@ -199,10 +199,15 @@ class HuginPanoramaStitcher:
             # Step 8: Stitch panorama
             panorama_path = self._stitch_with_nona(project_file)
             
-            # Step 9: Load result and calculate metrics
-            final_panorama = cv2.imread(panorama_path)
+            # Step 9: Load result and calculate metrics with proper TIFF handling
+            final_panorama = cv2.imread(panorama_path, cv2.IMREAD_COLOR)
             if final_panorama is None:
                 raise RuntimeError(f"Failed to load stitched panorama: {panorama_path}")
+            
+            # Check if image needs bit depth conversion
+            if final_panorama.dtype == np.uint16:
+                logger.info("Converting 16-bit TIFF to 8-bit for processing")
+                final_panorama = (final_panorama / 256).astype(np.uint8)
             
             processing_time = time.time() - start_time
             quality_metrics = self._calculate_quality_metrics(
