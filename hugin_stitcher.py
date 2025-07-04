@@ -733,7 +733,6 @@ class HuginPanoramaStitcher:
             "--blend-colorspace=CIELAB",  # Better color blending
             "--no-optimize",              # Disable optimization that fails with high overlap
             "--fine-mask",                # Use fine mask for better seams
-            "--exposure-cutoff=0.3",      # More permissive exposure matching
             "--hard-mask"                 # Use hard mask to handle excessive overlap
         ] + tiff_files
         
