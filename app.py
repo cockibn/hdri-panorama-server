@@ -146,12 +146,17 @@ processor = PanoramaProcessor()
 
 @app.route('/v1/panorama/process', methods=['POST'])
 def process_panorama():
+    logger.info(f"Processing request - form keys: {list(request.form.keys())}, files: {list(request.files.keys())}")
+    
     if 'session_metadata' not in request.form:
+        logger.error("Missing session_metadata in request")
         return jsonify({"error": "Missing session_metadata"}), 400
     if 'images_zip' not in request.files:
+        logger.error("Missing images_zip in request files")
         return jsonify({"error": "Missing images_zip file"}), 400
 
     job_id = str(uuid.uuid4())
+    logger.info(f"Processing job {job_id}")
     session_metadata = json.loads(request.form['session_metadata'])
     
     with job_lock:
@@ -166,16 +171,23 @@ def process_panorama():
     upload_dir.mkdir()
     
     bundle_file = request.files['images_zip']
+    logger.info(f"Bundle file size: {len(bundle_file.read())} bytes")
+    bundle_file.seek(0)  # Reset file pointer
+    
     image_files = extract_bundle_images(bundle_file, upload_dir)
+    logger.info(f"Extracted {len(image_files)} images from bundle")
     
     if not image_files:
+        logger.error("No images found in bundle - extraction failed")
         return jsonify({"error": "No images found in bundle"}), 400
     
     thread = threading.Thread(target=processor.process_session, args=(job_id, session_metadata, image_files))
     thread.daemon = True
     thread.start()
     
-    return jsonify({"jobId": job_id, "status": "accepted"}), 202
+    response = {"jobId": job_id, "status": "accepted"}
+    logger.info(f"Returning response: {response}")
+    return jsonify(response), 202
 
 @app.route('/v1/panorama/status/<job_id>', methods=['GET'])
 def get_job_status(job_id: str):
