@@ -265,4 +265,4 @@ To modify the stitching algorithm:
 
 🎉 **Your Hugin-based panorama processing server is ready!** 
 
-Launch your HDRi 360 Studio iOS app, capture some 360° photos, and process them into professional panoramas using this server with industry-standard Hugin tools.
+Launch your HDRi 360 Studio iOS app, capture some 360° photos, and process them into professional panoramas using this server with industry-standard Hugin tools.# Force deployment Fri Jul  4 14:25:07 CEST 2025
