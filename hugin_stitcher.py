@@ -140,10 +140,13 @@ class HuginPanoramaStitcher:
             if line.startswith('i '):
                 point = capture_points[image_idx]
                 yaw, pitch, roll = point.get('azimuth', 0), point.get('elevation', 0), 0
+                # Extract filename from original line
+                filename_part = line.strip().split('n"')[-1]
+                basename = os.path.basename(filename_part)
                 line = (f"i w{cam['image_width']} h{cam['image_height']} f0 v{cam['fov_horizontal']:.3f} "
                         f"a{cam['distortion_k1']:.6f} b{cam['distortion_k2']:.6f} c{cam['distortion_k3']:.6f} "
                         f"p{pitch:.3f} r{roll:.3f} y{yaw:.3f} "
-                        f"n\"{os.path.basename(line.strip().split('n\"')[-1])}\n")
+                        f'n"{basename}"\n')
                 image_idx += 1
             modified_lines.append(line)
         
