@@ -73,8 +73,17 @@ class PanoramaProcessor:
             Image.fromarray(result_rgb).save(str(output_path), 'JPEG', quality=95, optimize=True)
             
             base_url = os.environ.get('BASE_URL', 'https://hdri-panorama-server-production.up.railway.app').rstrip('/')
+            result_url = f"{base_url}/v1/panorama/result/{job_id}"
+            preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
+            
+            logger.info(f"🎉 Panorama processing completed successfully!")
+            logger.info(f"📥 Download: {result_url}")
+            logger.info(f"👁️  Preview: {preview_url}")
+            logger.info(f"📊 Quality Score: {quality_metrics['overallScore']:.3f}")
+            logger.info(f"📐 Resolution: {quality_metrics['resolution']}")
+            
             self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Professional panorama ready!", 
-                                  result_url=f"{base_url}/v1/panorama/result/{job_id}",
+                                  result_url=result_url,
                                   quality_metrics=quality_metrics)
             
         except Exception as e:
@@ -209,6 +218,21 @@ def download_result(job_id: str):
         abort(404)
     
     return send_file(str(result_path), as_attachment=True, download_name=f"panorama_{job_id}.jpg")
+
+@app.route('/v1/panorama/preview/<job_id>', methods=['GET'])
+def preview_result(job_id: str):
+    """Preview the panorama in browser without downloading"""
+    with job_lock:
+        job = jobs.get(job_id)
+    if not job or job.get("state") != JobState.COMPLETED:
+        abort(404)
+    
+    result_path = OUTPUT_DIR / f"{job_id}_panorama.jpg"
+    if not result_path.exists():
+        abort(404)
+    
+    logger.info(f"📸 Serving preview for job {job_id} - file size: {result_path.stat().st_size} bytes")
+    return send_file(str(result_path), mimetype='image/jpeg')
 
 @app.route('/health', methods=['GET'])
 def health_check():
