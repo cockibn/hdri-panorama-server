@@ -186,6 +186,15 @@ def process_panorama():
     image_files = extract_bundle_images(bundle_file, upload_dir)
     logger.info(f"Extracted {len(image_files)} images from bundle")
     
+    # Log input image quality info
+    if image_files:
+        sample_img = cv2.imread(image_files[0])
+        if sample_img is not None:
+            h, w = sample_img.shape[:2]
+            file_size = os.path.getsize(image_files[0])
+            logger.info(f"📸 Input image quality - Resolution: {w}x{h}, File size: {file_size} bytes")
+            logger.info(f"📸 Compression ratio: {file_size/(w*h*3):.3f} bytes/pixel")
+    
     if not image_files:
         logger.error("No images found in bundle - extraction failed")
         return jsonify({"error": "No images found in bundle"}), 400

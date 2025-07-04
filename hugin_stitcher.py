@@ -35,17 +35,18 @@ class HuginPanoramaStitcher:
         self.temp_dir = None
         self._verify_hugin_installation()
         
-        self.canvas_size = (8192, 4096)
-        self.jpeg_quality = 95
+        # Reduced canvas size for better quality/performance balance
+        self.canvas_size = (6144, 3072)  # 6K instead of 8K
+        self.jpeg_quality = 98  # Higher JPEG quality
         
-        # **RESTORED**: Specific parameters for the target camera. This is crucial.
+        # **IMPROVED**: Better iPhone 15 Pro Ultra-Wide parameters for quality
         self.iphone_15_pro_ultrawide = {
             'image_width': 4032,
             'image_height': 3024,
-            'fov_horizontal': 103.0,
-            'distortion_k1': -0.28,
-            'distortion_k2': 0.15,
-            'distortion_k3': -0.05,
+            'fov_horizontal': 120.0,  # True ultra-wide FOV
+            'distortion_k1': -0.35,   # Stronger barrel distortion correction
+            'distortion_k2': 0.20,    # Secondary distortion
+            'distortion_k3': -0.08,   # Tertiary distortion
         }
         
     def _find_hugin_path(self) -> str:
