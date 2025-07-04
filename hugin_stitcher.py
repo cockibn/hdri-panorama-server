@@ -644,11 +644,14 @@ class HuginPanoramaStitcher:
         if os.path.exists(output_file):
             os.remove(output_file)
         
-        # Ultra-wide optimized parameters
+        # Professional 360° panorama optimization parameters
         command = [
             "autooptimiser",
             "-a",              # Optimize positions and barrel distortion  
+            "-m",              # Optimize photometric parameters (exposure, white balance)
+            "-l",              # Optimize lens parameters (distortion, vignetting)
             "-s",              # Optimize shear
+            "-n",              # Keep one image fixed as anchor
             "-o", output_file,
             project_file
         ]
@@ -728,7 +731,10 @@ class HuginPanoramaStitcher:
         command = [
             "enblend",
             "-o", output_file,
-            "--compression=LZW"
+            "--compression=LZW",
+            "--fine-mask",                # Use fine mask for better seams
+            "--optimize",                 # Enable mask optimization for better quality
+            "--blend-colorspace=CIELAB"   # Better color blending for panoramas
         ] + tiff_files
         
         try:
@@ -737,11 +743,15 @@ class HuginPanoramaStitcher:
             if "excessive image overlap" in str(e):
                 logger.warning("Standard enblend failed due to excessive overlap, trying simplified approach")
                 
-                # Fallback: Use enfuse with minimal parameters
+                # Fallback: Use enfuse with optimized parameters for panoramas
                 command_fallback = [
                     "enfuse",
                     "-o", output_file,
-                    "--compression=LZW"
+                    "--compression=LZW",
+                    "--exposure-weight=0",        # Disable exposure fusion for panoramas
+                    "--saturation-weight=0.2",   # Minimal saturation weight
+                    "--contrast-weight=1.0",     # Emphasize contrast for better seams
+                    "--levels=29"                # Maximum pyramid levels for quality
                 ] + tiff_files
                 
                 self._run_hugin_command(command_fallback, timeout=1200)
