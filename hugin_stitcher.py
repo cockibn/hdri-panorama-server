@@ -728,11 +728,7 @@ class HuginPanoramaStitcher:
         command = [
             "enblend",
             "-o", output_file,
-            "--compression=LZW",
-            "--wrap=horizontal",
-            "--blend-colorspace=CIELAB",  # Better color blending
-            "--no-optimize",              # Disable optimization that fails with high overlap
-            "--fine-mask",                # Use fine mask for better seams
+            "--compression=LZW"
         ] + tiff_files
         
         try:
@@ -741,16 +737,11 @@ class HuginPanoramaStitcher:
             if "excessive image overlap" in str(e):
                 logger.warning("Standard enblend failed due to excessive overlap, trying simplified approach")
                 
-                # Fallback: Use enfuse instead of enblend for high-overlap situations
+                # Fallback: Use enfuse with minimal parameters
                 command_fallback = [
                     "enfuse",
                     "-o", output_file,
-                    "--compression=LZW",
-                    "--wrap=horizontal",
-                    "--exposure-weight=0",    # Disable exposure fusion
-                    "--saturation-weight=0",  # Disable saturation fusion  
-                    "--contrast-weight=1",    # Only use contrast for blending
-                    "--hard-mask"             # Handle overlap better
+                    "--compression=LZW"
                 ] + tiff_files
                 
                 self._run_hugin_command(command_fallback, timeout=1200)
