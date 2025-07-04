@@ -203,9 +203,9 @@ class HuginPanoramaStitcher:
         logger.info("Setting final output parameters...")
         output_file = os.path.join(self.temp_dir, "project_final.pto")
         command = [
-            "pano_modify", "--projection=0", "--fov=360x180",
+            "pano_modify", "--projection=2", "--fov=360x180",  # Equirectangular projection
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",
-            "--center", "--straighten", "-o", output_file, project_file
+            "--center", "-o", output_file, project_file  # Remove --straighten for 360°
         ]
         self._run_hugin_command(command)
         return output_file
@@ -229,10 +229,17 @@ class HuginPanoramaStitcher:
         
         output_file = os.path.join(self.temp_dir, "final_panorama.tif")
         try:
-            self._run_hugin_command(["enblend", "--compression=LZW", "-o", output_file] + existing_tiff_files, timeout=600)
+            # Better blending parameters for 360° panoramas
+            self._run_hugin_command([
+                "enblend", "--compression=LZW", "--wrap=horizontal",
+                "--no-optimize", "-o", output_file
+            ] + existing_tiff_files, timeout=600)
         except RuntimeError:
             logger.warning("enblend failed. Falling back to 'enfuse'.")
-            self._run_hugin_command(["enfuse", "--compression=LZW", "-o", output_file] + existing_tiff_files, timeout=600)
+            self._run_hugin_command([
+                "enfuse", "--compression=LZW", "--wrap=horizontal", 
+                "-o", output_file
+            ] + existing_tiff_files, timeout=600)
         return output_file
     
     def _calculate_quality_metrics(self, panorama: np.ndarray, project_file: str, processing_time: float) -> Dict:
