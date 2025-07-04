@@ -72,7 +72,7 @@ class PanoramaProcessor:
             result_rgb = cv2.cvtColor(panorama, cv2.COLOR_BGR2RGB)
             Image.fromarray(result_rgb).save(str(output_path), 'JPEG', quality=95, optimize=True)
             
-            base_url = os.environ.get('BASE_URL', request.host_url).rstrip('/')
+            base_url = os.environ.get('BASE_URL', 'https://hdri-panorama-server-production.up.railway.app').rstrip('/')
             self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Professional panorama ready!", 
                                   result_url=f"{base_url}/v1/panorama/result/{job_id}",
                                   quality_metrics=quality_metrics)
