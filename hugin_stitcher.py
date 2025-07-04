@@ -129,48 +129,38 @@ class HuginPanoramaStitcher:
         return project_file
     
     def _apply_lens_and_position_data(self, project_file: str, capture_points: List[Dict]):
-        """Inject specific camera lens and position data into the PTO file."""
+        """Apply camera positions without modifying image parameters that could cause dimension issues."""
         with open(project_file, 'r') as f:
             lines = f.readlines()
 
-        cam = self.iphone_15_pro_ultrawide
         modified_lines = []
         image_idx = 0
         
         for line in lines:
             if line.startswith('i ') and image_idx < len(capture_points):
-                # Parse original line to get actual image dimensions and filename
-                parts = line.strip().split()
-                original_w = original_h = None
-                filename = ""
-                
-                for part in parts:
-                    if part.startswith('w'):
-                        original_w = int(part[1:])
-                    elif part.startswith('h'):
-                        original_h = int(part[1:])
-                    elif part.startswith('n"') and part.endswith('"'):
-                        filename = part[2:-1]
-                
-                # Use original dimensions if available, fallback to camera specs
-                width = original_w or cam['image_width']
-                height = original_h or cam['image_height']
-                
                 point = capture_points[image_idx]
                 yaw, pitch, roll = point.get('azimuth', 0), point.get('elevation', 0), 0
                 
-                # Rebuild line with consistent parameters
-                line = (f"i w{width} h{height} f0 v{cam['fov_horizontal']:.3f} "
-                        f"a{cam['distortion_k1']:.6f} b{cam['distortion_k2']:.6f} c{cam['distortion_k3']:.6f} "
-                        f"d0 e0 p{pitch:.3f} r{roll:.3f} y{yaw:.3f} "
-                        f'n"{filename}"\n')
+                # Only modify position parameters, keep original image specs
+                parts = line.strip().split()
+                new_parts = []
+                
+                for part in parts:
+                    # Remove existing position parameters
+                    if not (part.startswith('y') or part.startswith('p') or part.startswith('r')):
+                        new_parts.append(part)
+                
+                # Add position parameters at the end
+                new_parts.extend([f'y{yaw:.3f}', f'p{pitch:.3f}', f'r{roll:.3f}'])
+                
+                line = ' '.join(new_parts) + '\n'
                 image_idx += 1
             
             modified_lines.append(line)
         
         with open(project_file, 'w') as f:
             f.writelines(modified_lines)
-        logger.info("Applied lens and position data to PTO file with consistent dimensions.")
+        logger.info("Applied camera positions to PTO file without modifying image dimensions.")
 
     def _find_control_points(self, project_file: str) -> str:
         logger.info("Starting control point detection...")
