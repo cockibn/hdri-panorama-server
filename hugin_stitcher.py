@@ -45,7 +45,7 @@ class HuginPanoramaStitcher:
         self._verify_hugin_installation()
         
         # Processing parameters
-        self.canvas_size = (4096, 2048)  # 4K equirectangular
+        self.canvas_size = (8192, 4096)  # 8K equirectangular for high quality
         self.jpeg_quality = 95
         
         # iPhone 15 Pro Ultra-Wide Camera Specifications
@@ -203,6 +203,10 @@ class HuginPanoramaStitcher:
             final_panorama = cv2.imread(panorama_path, cv2.IMREAD_COLOR)
             if final_panorama is None:
                 raise RuntimeError(f"Failed to load stitched panorama: {panorama_path}")
+            
+            # Log actual output dimensions
+            height, width = final_panorama.shape[:2]
+            logger.info(f"Loaded panorama dimensions: {width}x{height} (expected: {self.canvas_size[0]}x{self.canvas_size[1]})")
             
             # Check if image needs bit depth conversion
             if final_panorama.dtype == np.uint16:
@@ -691,17 +695,15 @@ class HuginPanoramaStitcher:
             "-o", output_file,
             "--center",                    # Center panorama
             "--straighten",                # Straighten panorama
-            "--canvas=AUTO",               # Auto-calculate canvas size
-            "--crop=AUTO",                 # Auto-crop
             f"--fov=360x180",             # Full spherical FOV
             "--projection=0",              # Equirectangular projection
-            f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
+            f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size to 4K
             project_file
         ]
         
         self._run_hugin_command(command)
         
-        logger.info("Output parameters set")
+        logger.info(f"Output parameters set: canvas={self.canvas_size[0]}x{self.canvas_size[1]}, FOV=360x180")
         return output_file
     
     def _stitch_with_nona(self, project_file: str) -> str:
