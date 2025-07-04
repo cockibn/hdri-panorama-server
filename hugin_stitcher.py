@@ -218,13 +218,20 @@ class HuginPanoramaStitcher:
         if not tiff_files:
             raise RuntimeError("nona failed to produce remapped TIFF files.")
         
-        logger.info(f"Blending {len(tiff_files)} images...")
+        # Filter out any missing files and verify they exist
+        existing_tiff_files = [f for f in tiff_files if os.path.exists(f)]
+        if not existing_tiff_files:
+            raise RuntimeError("No valid remapped TIFF files found for blending.")
+        
+        logger.info(f"Blending {len(existing_tiff_files)} images...")
+        logger.info(f"TIFF files: {[os.path.basename(f) for f in existing_tiff_files]}")
+        
         output_file = os.path.join(self.temp_dir, "final_panorama.tif")
         try:
-            self._run_hugin_command(["enblend", "--compression=LZW", "-o", output_file] + tiff_files, timeout=600)
+            self._run_hugin_command(["enblend", "--compression=LZW", "-o", output_file] + existing_tiff_files, timeout=600)
         except RuntimeError:
             logger.warning("enblend failed. Falling back to 'enfuse'.")
-            self._run_hugin_command(["enfuse", "--compression=LZW", "-o", output_file] + tiff_files, timeout=600)
+            self._run_hugin_command(["enfuse", "--compression=LZW", "-o", output_file] + existing_tiff_files, timeout=600)
         return output_file
     
     def _calculate_quality_metrics(self, panorama: np.ndarray, project_file: str, processing_time: float) -> Dict:
