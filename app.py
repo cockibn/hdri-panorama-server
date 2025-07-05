@@ -164,6 +164,7 @@ class PanoramaProcessor:
 # --- SNIP --- The existing Flask routes are well-written. I'll just copy the necessary parts.
 
 def extract_bundle_images(bundle_file, upload_dir):
+    image_files = []
     try:
         bundle_data = bundle_file.read()
         if not bundle_data.startswith(b"HDRI_BUNDLE_V1\n"):
@@ -173,62 +174,84 @@ def extract_bundle_images(bundle_file, upload_dir):
         image_count = int(parts[1])
         data = parts[2]
         
-        image_files = []
         original_exif_data = []
         offset = 0
         
+        # First, extract all images (most critical part)
         for i in range(image_count):
-            header_end = data.find(b'\n', offset)
-            header = data[offset:header_end].decode()
-            index, size_str = header.split(':')
-            size = int(size_str)
-            offset = header_end + 1
-            
-            image_data = data[offset : offset + size]
-            filepath = upload_dir / f"image_{index}.jpg"
-            filepath.write_bytes(image_data)
-            
-            # Extract original EXIF data before processing
             try:
-                import piexif
-                exif_dict = piexif.load(image_data)
-                original_exif_data.append(exif_dict)
-                logger.info(f"📋 Extracted EXIF data from image {index}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not extract EXIF from image {index}: {e}")
-                original_exif_data.append({})
-            
-            image_files.append(str(filepath))
-            offset += size
+                header_end = data.find(b'\n', offset)
+                header = data[offset:header_end].decode()
+                index, size_str = header.split(':')
+                size = int(size_str)
+                offset = header_end + 1
+                
+                image_data = data[offset : offset + size]
+                filepath = upload_dir / f"image_{index}.jpg"
+                filepath.write_bytes(image_data)
+                image_files.append(str(filepath))
+                
+                # Extract original EXIF data (secondary priority)
+                try:
+                    import piexif
+                    exif_dict = piexif.load(image_data)
+                    original_exif_data.append(exif_dict)
+                    logger.info(f"📋 Extracted EXIF data from image {index}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not extract EXIF from image {index}: {e}")
+                    original_exif_data.append({})
+                
+                offset += size
+                
+            except Exception as image_error:
+                logger.error(f"Failed to extract image {i}: {image_error}")
+                # Continue with next image
+                continue
         
-        # Store EXIF data for later use
-        exif_file = upload_dir / "original_exif.json"
-        with open(exif_file, 'w') as f:
-            import json
-            # Convert EXIF data to JSON-serializable format
-            serializable_exif = []
-            for exif_dict in original_exif_data:
-                serializable = {}
-                for ifd_name in exif_dict:
-                    serializable[ifd_name] = {}
-                    for tag in exif_dict[ifd_name]:
-                        try:
-                            # Convert bytes to base64 for JSON serialization
-                            value = exif_dict[ifd_name][tag]
-                            if isinstance(value, bytes):
-                                import base64
-                                serializable[ifd_name][tag] = {"type": "bytes", "data": base64.b64encode(value).decode()}
-                            else:
-                                serializable[ifd_name][tag] = {"type": "value", "data": value}
-                        except:
-                            pass
-                serializable_exif.append(serializable)
-            json.dump(serializable_exif, f)
+        logger.info(f"📦 Successfully extracted {len(image_files)} images")
+        
+        # Store EXIF data for later use (tertiary priority)
+        try:
+            exif_file = upload_dir / "original_exif.json"
+            with open(exif_file, 'w') as f:
+                import json
+                # Convert EXIF data to JSON-serializable format
+                serializable_exif = []
+                for exif_dict in original_exif_data:
+                    if not exif_dict:  # Skip empty EXIF data
+                        serializable_exif.append({})
+                        continue
+                        
+                    serializable = {}
+                    for ifd_name in exif_dict:
+                        if exif_dict[ifd_name] is None:  # Skip None IFD data
+                            continue
+                        serializable[ifd_name] = {}
+                        for tag in exif_dict[ifd_name]:
+                            try:
+                                # Convert bytes to base64 for JSON serialization
+                                value = exif_dict[ifd_name][tag]
+                                if isinstance(value, bytes):
+                                    import base64
+                                    serializable[ifd_name][tag] = {"type": "bytes", "data": base64.b64encode(value).decode()}
+                                else:
+                                    serializable[ifd_name][tag] = {"type": "value", "data": value}
+                            except Exception as json_error:
+                                logger.debug(f"Skipping EXIF tag {tag} due to JSON serialization error: {json_error}")
+                                pass
+                    serializable_exif.append(serializable)
+                json.dump(serializable_exif, f)
+            logger.info(f"📋 Saved EXIF data for {len(original_exif_data)} images")
+        except Exception as exif_save_error:
+            logger.warning(f"⚠️ Failed to save EXIF data: {exif_save_error}")
+            # Continue without EXIF data if saving fails
         
         return image_files
+        
     except Exception as e:
         logger.error(f"Failed to extract bundle: {e}")
-        return []
+        logger.info(f"📦 Returning {len(image_files)} images that were successfully extracted before error")
+        return image_files  # Return whatever images we managed to extract
 
 processor = PanoramaProcessor()
 
