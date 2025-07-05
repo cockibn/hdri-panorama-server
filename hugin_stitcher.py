@@ -171,8 +171,8 @@ class HuginPanoramaStitcher:
                     40962: img.shape[1],  # PixelXDimension
                     40963: img.shape[0],  # PixelYDimension
                     41495: 2,  # SensingMethod (one-chip color area sensor)
-                    41728: (1,),  # FileSource (digital camera)
-                    41729: (1,),  # SceneType (directly photographed)
+                    41728: b"\x03",  # FileSource (digital camera) - needs bytes
+                    41729: b"\x01",  # SceneType (directly photographed) - needs bytes
                 }
             }
             
@@ -185,6 +185,10 @@ class HuginPanoramaStitcher:
                 # Fallback to basic save if piexif not available
                 pil_image.save(image_path, "JPEG", quality=self.jpeg_quality)
                 logger.warning("piexif not available - saving without EXIF data")
+            except Exception as e:
+                # Fallback to basic save if EXIF creation fails
+                pil_image.save(image_path, "JPEG", quality=self.jpeg_quality)
+                logger.warning(f"Failed to add EXIF data: {e} - saving without EXIF")
             
             image_paths.append(image_path)
         return image_paths
