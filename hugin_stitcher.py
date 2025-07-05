@@ -299,23 +299,24 @@ class HuginPanoramaStitcher:
         
         # Calculate FOV from focal length (35mm equivalent sensor diagonal ~43.3mm)
         # For ultra-wide: focal_length ≈ 1.3mm gives ~120° FOV
+        # REDUCED distortion parameters to avoid enblend geometric issues
         if focal_length_mm <= 1.5:  # Ultra-wide camera
             fov = 120.0
-            distortion_a = -0.35
-            distortion_b = 0.20
-            distortion_c = -0.08
-            logger.info(f"📱 Detected iPhone Ultra-Wide camera: {focal_length_mm}mm focal length")
+            distortion_a = -0.25  # Reduced from -0.35 to prevent excessive correction
+            distortion_b = 0.15   # Reduced from 0.20
+            distortion_c = -0.05  # Reduced from -0.08
+            logger.info(f"📱 Detected iPhone Ultra-Wide camera: {focal_length_mm}mm focal length (using conservative distortion correction)")
         elif focal_length_mm <= 3.0:  # Wide camera  
             fov = 78.0
-            distortion_a = -0.15
-            distortion_b = 0.10
-            distortion_c = -0.03
+            distortion_a = -0.12  # Slightly reduced from -0.15
+            distortion_b = 0.08   # Slightly reduced from 0.10
+            distortion_c = -0.02  # Slightly reduced from -0.03
             logger.info(f"📱 Detected iPhone Wide camera: {focal_length_mm}mm focal length")
         else:  # Telephoto or other
             fov = 65.0
-            distortion_a = -0.05
-            distortion_b = 0.02
-            distortion_c = -0.01
+            distortion_a = -0.03  # Slightly reduced from -0.05
+            distortion_b = 0.01   # Slightly reduced from 0.02
+            distortion_c = -0.005 # Slightly reduced from -0.01
             logger.info(f"📱 Detected iPhone Telephoto camera: {focal_length_mm}mm focal length")
         
         return {
@@ -395,6 +396,20 @@ class HuginPanoramaStitcher:
         if not existing_tiff_files:
             raise RuntimeError("No valid remapped TIFF files found for blending.")
         
+        # Log TIFF file diagnostics
+        total_size = sum(os.path.getsize(f) for f in existing_tiff_files)
+        logger.info(f"📊 TIFF diagnostics: {len(existing_tiff_files)} files, {total_size/1024/1024:.1f}MB total")
+        
+        # Check first TIFF for properties that might cause enblend issues
+        try:
+            import PIL.Image
+            sample_tiff = PIL.Image.open(existing_tiff_files[0])
+            logger.info(f"📊 Sample TIFF: {sample_tiff.size}, mode={sample_tiff.mode}, format={sample_tiff.format}")
+            if hasattr(sample_tiff, 'tag'):
+                logger.info(f"📊 TIFF compression: {sample_tiff.tag.get(259, 'unknown')}")
+        except Exception as tiff_error:
+            logger.warning(f"⚠️ Could not analyze TIFF properties: {tiff_error}")
+        
         if progress_callback:
             progress_callback(0.9, f"Blending {len(existing_tiff_files)} images...")
         logger.info(f"Blending {len(existing_tiff_files)} images...")
@@ -407,14 +422,28 @@ class HuginPanoramaStitcher:
                 "enblend", "--compression=LZW", "--wrap=horizontal",
                 "--no-optimize", "-o", output_file
             ] + existing_tiff_files, timeout=600)
-        except RuntimeError:
+        except RuntimeError as enblend_error:
             if progress_callback:
                 progress_callback(0.92, "Enblend failed, trying enfuse...")
-            logger.warning("enblend failed. Falling back to 'enfuse'.")
-            self._run_hugin_command([
-                "enfuse", "--compression=LZW", "--wrap=horizontal", 
-                "-o", output_file
-            ] + existing_tiff_files, timeout=600)
+            logger.warning(f"enblend failed with error: {enblend_error}")
+            logger.info("Common enblend failure causes: memory issues, overlapping regions, or geometric problems")
+            
+            # Try with more conservative enblend settings first
+            try:
+                logger.info("Trying enblend with more conservative settings...")
+                self._run_hugin_command([
+                    "enblend", "--compression=LZW", "--wrap=horizontal",
+                    "--no-optimize", "--levels=29", "--blend-colorspace=identity",
+                    "-o", output_file
+                ] + existing_tiff_files, timeout=600)
+                logger.info("enblend succeeded with conservative settings")
+            except RuntimeError as conservative_error:
+                logger.warning(f"Conservative enblend also failed: {conservative_error}")
+                logger.info("Falling back to enfuse for blending")
+                self._run_hugin_command([
+                    "enfuse", "--compression=LZW", "--wrap=horizontal", 
+                    "-o", output_file
+                ] + existing_tiff_files, timeout=600)
         return output_file
     
     def _calculate_quality_metrics(self, panorama: np.ndarray, project_file: str, processing_time: float) -> Dict:
