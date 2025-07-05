@@ -16,3 +16,4 @@ requests>=2.31.0
 
 # Additional utilities
 python-dateutil>=2.8.2
+piexif>=1.1.3

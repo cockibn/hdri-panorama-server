@@ -3,7 +3,7 @@
 Hugin-based Panorama Stitching Module
 
 This module implements professional-grade panorama stitching using Hugin command-line tools,
-specifically optimized for the 16-point ultra-wide capture pattern used by HDRi 360 Studio.
+optimized for multi-point ultra-wide capture patterns (16-24+ images) used by HDRi 360 Studio.
 
 Key Features:
 - Hugin command-line tool integration (cpfind, autooptimiser, nona, etc.)
@@ -37,7 +37,7 @@ class HuginPanoramaStitcher:
         
         # Reduced canvas size for better quality/performance balance
         self.canvas_size = (6144, 3072)  # 6K instead of 8K
-        self.jpeg_quality = 98  # Higher JPEG quality
+        self.jpeg_quality = 95  # High quality but reasonable for intermediate files
         
         # **IMPROVED**: Better iPhone 15 Pro Ultra-Wide parameters for quality
         self.iphone_15_pro_ultrawide = {
@@ -76,7 +76,7 @@ class HuginPanoramaStitcher:
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Hugin tool failed: {e.cmd}\nError: {e.stderr}") from e
     
-    def stitch_panorama(self, images: List[np.ndarray], capture_points: List[Dict]) -> Tuple[np.ndarray, Dict]:
+    def stitch_panorama(self, images: List[np.ndarray], capture_points: List[Dict], progress_callback=None) -> Tuple[np.ndarray, Dict]:
         start_time = time.time()
         if len(images) < 4:
             raise ValueError("Need at least 4 images for panorama stitching.")
@@ -84,19 +84,42 @@ class HuginPanoramaStitcher:
         
         self.temp_dir = tempfile.mkdtemp(prefix="hugin_stitch_")
         try:
+            if progress_callback:
+                progress_callback(0.0, "Saving images to temporary directory...")
             image_paths = self._save_images_to_temp(images)
+            
+            if progress_callback:
+                progress_callback(0.1, "Creating Hugin project file...")
             project_file = self._create_pto_project(image_paths, capture_points)
+            
+            if progress_callback:
+                progress_callback(0.2, "Finding control points between images...")
             project_file = self._find_control_points(project_file)
+            
+            if progress_callback:
+                progress_callback(0.4, "Cleaning and filtering control points...")
             project_file = self._clean_control_points(project_file)
+            
+            if progress_callback:
+                progress_callback(0.5, "Optimizing panorama geometry...")
             project_file = self._optimize_panorama(project_file)
+            
+            if progress_callback:
+                progress_callback(0.7, "Setting output parameters...")
             project_file = self._set_output_parameters(project_file)
             
-            panorama_path = self._stitch_and_blend(project_file)
+            if progress_callback:
+                progress_callback(0.8, "Stitching and blending panorama...")
+            panorama_path = self._stitch_and_blend(project_file, progress_callback)
             
+            if progress_callback:
+                progress_callback(0.95, "Loading final panorama...")
             final_panorama = cv2.imread(panorama_path, cv2.IMREAD_UNCHANGED)
             if final_panorama is None:
                 raise RuntimeError(f"Failed to load the final stitched image from {panorama_path}")
             
+            if progress_callback:
+                progress_callback(0.97, "Processing final image...")
             if final_panorama.dtype == np.uint16:
                 final_panorama = (final_panorama / 256).astype(np.uint8)
 
@@ -105,6 +128,8 @@ class HuginPanoramaStitcher:
             elif final_panorama.shape[2] == 4:
                 final_panorama = cv2.cvtColor(final_panorama, cv2.COLOR_BGRA2BGR)
             
+            if progress_callback:
+                progress_callback(0.99, "Calculating quality metrics...")
             processing_time = time.time() - start_time
             quality_metrics = self._calculate_quality_metrics(final_panorama, project_file, processing_time)
             
@@ -118,7 +143,48 @@ class HuginPanoramaStitcher:
         image_paths = []
         for i, img in enumerate(images):
             image_path = os.path.join(self.temp_dir, f"image_{i:04d}.jpg")
-            cv2.imwrite(image_path, img, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+            
+            # Convert BGR to RGB for PIL
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_img)
+            
+            # Add essential EXIF data for Hugin with iPhone 15 Pro Ultra-Wide specifications
+            exif_dict = {
+                "0th": {
+                    256: img.shape[1],  # ImageWidth
+                    257: img.shape[0],  # ImageLength  
+                    271: "Apple",  # Make
+                    272: "iPhone 15 Pro",  # Model
+                    274: 1,  # Orientation (normal)
+                    282: (72, 1),  # XResolution
+                    283: (72, 1),  # YResolution
+                    296: 2,  # ResolutionUnit (inches)
+                },
+                "Exif": {
+                    33434: (1, 60),  # ExposureTime (1/60s typical)
+                    33437: (28, 10),  # FNumber (f/2.8 for ultra-wide)
+                    34855: 125,  # ISOSpeedRatings (typical iPhone value)
+                    37386: (130, 100),  # FocalLength (1.3mm actual ultra-wide)
+                    37377: (6, 1),  # ShutterSpeedValue
+                    37378: (28, 10),  # ApertureValue (f/2.8)
+                    40962: img.shape[1],  # PixelXDimension
+                    40963: img.shape[0],  # PixelYDimension
+                    41495: 2,  # SensingMethod (one-chip color area sensor)
+                    41728: (1,),  # FileSource (digital camera)
+                    41729: (1,),  # SceneType (directly photographed)
+                }
+            }
+            
+            try:
+                import piexif
+                exif_bytes = piexif.dump(exif_dict)
+                pil_image.save(image_path, "JPEG", quality=self.jpeg_quality, exif=exif_bytes)
+                logger.debug(f"Saved image with EXIF data: {os.path.basename(image_path)}")
+            except ImportError:
+                # Fallback to basic save if piexif not available
+                pil_image.save(image_path, "JPEG", quality=self.jpeg_quality)
+                logger.warning("piexif not available - saving without EXIF data")
+            
             image_paths.append(image_path)
         return image_paths
     
@@ -210,11 +276,15 @@ class HuginPanoramaStitcher:
         self._run_hugin_command(command)
         return output_file
     
-    def _stitch_and_blend(self, project_file: str) -> str:
+    def _stitch_and_blend(self, project_file: str, progress_callback=None) -> str:
+        if progress_callback:
+            progress_callback(0.82, "Remapping images with nona...")
         logger.info("Remapping images with 'nona'...")
         output_prefix = os.path.join(self.temp_dir, "remap")
         self._run_hugin_command(["nona", "-m", "TIFF_m", "-o", output_prefix, project_file], timeout=600)
         
+        if progress_callback:
+            progress_callback(0.88, "Preparing images for blending...")
         tiff_files = sorted(str(p) for p in Path(self.temp_dir).glob("remap*.tif"))
         if not tiff_files:
             raise RuntimeError("nona failed to produce remapped TIFF files.")
@@ -224,6 +294,8 @@ class HuginPanoramaStitcher:
         if not existing_tiff_files:
             raise RuntimeError("No valid remapped TIFF files found for blending.")
         
+        if progress_callback:
+            progress_callback(0.9, f"Blending {len(existing_tiff_files)} images...")
         logger.info(f"Blending {len(existing_tiff_files)} images...")
         logger.info(f"TIFF files: {[os.path.basename(f) for f in existing_tiff_files]}")
         
@@ -235,6 +307,8 @@ class HuginPanoramaStitcher:
                 "--no-optimize", "-o", output_file
             ] + existing_tiff_files, timeout=600)
         except RuntimeError:
+            if progress_callback:
+                progress_callback(0.92, "Enblend failed, trying enfuse...")
             logger.warning("enblend failed. Falling back to 'enfuse'.")
             self._run_hugin_command([
                 "enfuse", "--compression=LZW", "--wrap=horizontal", 

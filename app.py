@@ -2,9 +2,9 @@
 """
 HDRi 360 Studio - Hugin Panorama Processing Server
 
-This server receives 16-point ultra-wide camera captures from the iOS app
+This server receives multi-point ultra-wide camera captures from the iOS app
 and processes them into professional 360° panoramas using a Hugin-based
-stitching engine.
+stitching engine. Supports flexible capture patterns (16-24+ images).
 """
 
 import os
@@ -62,8 +62,14 @@ class PanoramaProcessor:
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.1, f"Loaded {len(images)} images. Starting Hugin pipeline...")
             
+            # Create progress callback for real-time updates
+            def progress_callback(progress: float, message: str):
+                # Map stitching progress from 10% to 95%
+                mapped_progress = 0.1 + (progress * 0.85)
+                self._update_job_status(job_id, JobState.PROCESSING, mapped_progress, message)
+            
             capture_points = session_data.get('capturePoints', [])
-            panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points)
+            panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points, progress_callback)
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Stitching complete. Saving panorama...")
             
