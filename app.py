@@ -54,13 +54,47 @@ class PanoramaProcessor:
         try:
             self._update_job_status(job_id, JobState.PROCESSING, 0.0, "Loading and preparing images...")
             
+            # Load original EXIF data if available
+            upload_dir = Path("uploads") / job_id
+            exif_file = upload_dir / "original_exif.json"
+            original_exif_data = []
+            
+            if exif_file.exists():
+                try:
+                    import json
+                    import base64
+                    with open(exif_file, 'r') as f:
+                        serialized_exif = json.load(f)
+                    
+                    # Convert back from JSON to piexif format
+                    for exif_entry in serialized_exif:
+                        exif_dict = {}
+                        for ifd_name, ifd_data in exif_entry.items():
+                            exif_dict[ifd_name] = {}
+                            for tag, value_info in ifd_data.items():
+                                if isinstance(value_info, dict):
+                                    if value_info.get("type") == "bytes":
+                                        exif_dict[ifd_name][int(tag)] = base64.b64decode(value_info["data"])
+                                    else:
+                                        exif_dict[ifd_name][int(tag)] = value_info["data"]
+                                else:
+                                    exif_dict[ifd_name][int(tag)] = value_info
+                        original_exif_data.append(exif_dict)
+                    
+                    logger.info(f"📋 Loaded original EXIF data for {len(original_exif_data)} images")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load EXIF data: {e}")
+                    original_exif_data = []
+            else:
+                logger.warning("⚠️ No original EXIF data found")
+            
             images = [self._load_and_orient_image(p) for p in image_files]
             images = [img for img in images if img is not None]
             
             if len(images) < 4:
                 raise ValueError(f"Stitching requires at least 4 valid images, but found {len(images)}.")
             
-            self._update_job_status(job_id, JobState.PROCESSING, 0.1, f"Loaded {len(images)} images. Starting Hugin pipeline...")
+            self._update_job_status(job_id, JobState.PROCESSING, 0.1, f"Loaded {len(images)} images with EXIF data. Starting optimized Hugin pipeline...")
             
             # Create progress callback for real-time updates
             def progress_callback(progress: float, message: str):
@@ -69,7 +103,8 @@ class PanoramaProcessor:
                 self._update_job_status(job_id, JobState.PROCESSING, mapped_progress, message)
             
             capture_points = session_data.get('capturePoints', [])
-            panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points, progress_callback)
+            # Pass original EXIF data to the stitcher for iPhone optimization
+            panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points, progress_callback, original_exif_data)
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Stitching complete. Saving panorama...")
             
@@ -82,13 +117,14 @@ class PanoramaProcessor:
             result_url = f"{base_url}/v1/panorama/result/{job_id}"
             preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
             
-            logger.info(f"🎉 Panorama processing completed successfully!")
+            logger.info(f"🎉 iPhone-optimized panorama processing completed successfully!")
             logger.info(f"📥 Download: {result_url}")
             logger.info(f"👁️  Preview: {preview_url}")
             logger.info(f"📊 Quality Score: {quality_metrics['overallScore']:.3f}")
             logger.info(f"📐 Resolution: {quality_metrics['resolution']}")
+            logger.info(f"📱 Processor: {quality_metrics.get('processor', 'Hugin (iPhone Optimized)')}")
             
-            self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Professional panorama ready!", 
+            self._update_job_status(job_id, JobState.COMPLETED, 1.0, "iPhone-optimized panorama ready!", 
                                   result_url=result_url,
                                   quality_metrics=quality_metrics)
             
@@ -138,7 +174,9 @@ def extract_bundle_images(bundle_file, upload_dir):
         data = parts[2]
         
         image_files = []
+        original_exif_data = []
         offset = 0
+        
         for i in range(image_count):
             header_end = data.find(b'\n', offset)
             header = data[offset:header_end].decode()
@@ -149,8 +187,43 @@ def extract_bundle_images(bundle_file, upload_dir):
             image_data = data[offset : offset + size]
             filepath = upload_dir / f"image_{index}.jpg"
             filepath.write_bytes(image_data)
+            
+            # Extract original EXIF data before processing
+            try:
+                import piexif
+                exif_dict = piexif.load(image_data)
+                original_exif_data.append(exif_dict)
+                logger.info(f"📋 Extracted EXIF data from image {index}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not extract EXIF from image {index}: {e}")
+                original_exif_data.append({})
+            
             image_files.append(str(filepath))
             offset += size
+        
+        # Store EXIF data for later use
+        exif_file = upload_dir / "original_exif.json"
+        with open(exif_file, 'w') as f:
+            import json
+            # Convert EXIF data to JSON-serializable format
+            serializable_exif = []
+            for exif_dict in original_exif_data:
+                serializable = {}
+                for ifd_name in exif_dict:
+                    serializable[ifd_name] = {}
+                    for tag in exif_dict[ifd_name]:
+                        try:
+                            # Convert bytes to base64 for JSON serialization
+                            value = exif_dict[ifd_name][tag]
+                            if isinstance(value, bytes):
+                                import base64
+                                serializable[ifd_name][tag] = {"type": "bytes", "data": base64.b64encode(value).decode()}
+                            else:
+                                serializable[ifd_name][tag] = {"type": "value", "data": value}
+                        except:
+                            pass
+                serializable_exif.append(serializable)
+            json.dump(serializable_exif, f)
         
         return image_files
     except Exception as e:

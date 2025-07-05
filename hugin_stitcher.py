@@ -77,7 +77,7 @@ class HuginPanoramaStitcher:
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Hugin tool failed: {e.cmd}\nError: {e.stderr}") from e
     
-    def stitch_panorama(self, images: List[np.ndarray], capture_points: List[Dict], progress_callback=None) -> Tuple[np.ndarray, Dict]:
+    def stitch_panorama(self, images: List[np.ndarray], capture_points: List[Dict], progress_callback=None, original_exif_data: List[Dict] = None) -> Tuple[np.ndarray, Dict]:
         start_time = time.time()
         if len(images) < 4:
             raise ValueError("Need at least 4 images for panorama stitching.")
@@ -87,11 +87,11 @@ class HuginPanoramaStitcher:
         try:
             if progress_callback:
                 progress_callback(0.0, "Saving images to temporary directory...")
-            image_paths = self._save_images_to_temp(images)
+            image_paths = self._save_images_to_temp(images, original_exif_data or [])
             
             if progress_callback:
                 progress_callback(0.1, "Creating Hugin project file...")
-            project_file = self._create_pto_project(image_paths, capture_points)
+            project_file = self._create_pto_project(image_paths, capture_points, original_exif_data or [])
             
             if progress_callback:
                 progress_callback(0.2, "Finding control points between images...")
@@ -140,7 +140,7 @@ class HuginPanoramaStitcher:
             if self.temp_dir:
                 shutil.rmtree(self.temp_dir)
     
-    def _save_images_to_temp(self, images: List[np.ndarray]) -> List[str]:
+    def _save_images_to_temp(self, images: List[np.ndarray], original_exif_data: List[Dict] = None) -> List[str]:
         image_paths = []
         for i, img in enumerate(images):
             image_path = os.path.join(self.temp_dir, f"image_{i:04d}.jpg")
@@ -149,32 +149,49 @@ class HuginPanoramaStitcher:
             rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(rgb_img)
             
-            # Add essential EXIF data for Hugin with iPhone 15 Pro Ultra-Wide specifications
-            exif_dict = {
-                "0th": {
-                    256: img.shape[1],  # ImageWidth
-                    257: img.shape[0],  # ImageLength  
-                    271: "Apple",  # Make
-                    272: "iPhone 15 Pro",  # Model
-                    274: 1,  # Orientation (normal)
-                    282: (72, 1),  # XResolution
-                    283: (72, 1),  # YResolution
-                    296: 2,  # ResolutionUnit (inches)
-                },
-                "Exif": {
-                    33434: (1, 60),  # ExposureTime (1/60s typical)
-                    33437: (28, 10),  # FNumber (f/2.8 for ultra-wide)
-                    34855: 125,  # ISOSpeedRatings (typical iPhone value)
-                    37386: (130, 100),  # FocalLength (1.3mm actual ultra-wide)
-                    37377: (6, 1),  # ShutterSpeedValue
-                    37378: (28, 10),  # ApertureValue (f/2.8)
-                    40962: img.shape[1],  # PixelXDimension
-                    40963: img.shape[0],  # PixelYDimension
-                    41495: 2,  # SensingMethod (one-chip color area sensor)
-                    41728: b"\x03",  # FileSource (digital camera) - needs bytes
-                    41729: b"\x01",  # SceneType (directly photographed) - needs bytes
+            # Use original EXIF data if available, otherwise create enhanced default
+            if original_exif_data and i < len(original_exif_data) and original_exif_data[i]:
+                exif_dict = original_exif_data[i].copy()
+                logger.info(f"📋 Using original EXIF data for image {i}")
+                
+                # Update image dimensions in case they changed
+                if "0th" not in exif_dict:
+                    exif_dict["0th"] = {}
+                exif_dict["0th"][256] = img.shape[1]  # ImageWidth
+                exif_dict["0th"][257] = img.shape[0]  # ImageLength
+                
+                if "Exif" not in exif_dict:
+                    exif_dict["Exif"] = {}
+                exif_dict["Exif"][40962] = img.shape[1]  # PixelXDimension
+                exif_dict["Exif"][40963] = img.shape[0]  # PixelYDimension
+            else:
+                # Enhanced fallback EXIF with iPhone 15 Pro Ultra-Wide specifications
+                logger.warning(f"⚠️ No original EXIF for image {i}, using enhanced defaults")
+                exif_dict = {
+                    "0th": {
+                        256: img.shape[1],  # ImageWidth
+                        257: img.shape[0],  # ImageLength  
+                        271: "Apple",  # Make
+                        272: "iPhone 15 Pro",  # Model
+                        274: 1,  # Orientation (normal)
+                        282: (72, 1),  # XResolution
+                        283: (72, 1),  # YResolution
+                        296: 2,  # ResolutionUnit (inches)
+                    },
+                    "Exif": {
+                        33434: (1, 60),  # ExposureTime (1/60s typical)
+                        33437: (28, 10),  # FNumber (f/2.8 for ultra-wide)
+                        34855: 125,  # ISOSpeedRatings (typical iPhone value)
+                        37386: (130, 100),  # FocalLength (1.3mm actual ultra-wide)
+                        37377: (6, 1),  # ShutterSpeedValue
+                        37378: (28, 10),  # ApertureValue (f/2.8)
+                        40962: img.shape[1],  # PixelXDimension
+                        40963: img.shape[0],  # PixelYDimension
+                        41495: 2,  # SensingMethod (one-chip color area sensor)
+                        41728: b"\x03",  # FileSource (digital camera) - needs bytes
+                        41729: b"\x01",  # SceneType (directly photographed) - needs bytes
+                    }
                 }
-            }
             
             try:
                 import piexif
@@ -193,15 +210,15 @@ class HuginPanoramaStitcher:
             image_paths.append(image_path)
         return image_paths
     
-    def _create_pto_project(self, image_paths: List[str], capture_points: List[Dict]) -> str:
+    def _create_pto_project(self, image_paths: List[str], capture_points: List[Dict], original_exif_data: List[Dict] = None) -> str:
         project_file = os.path.join(self.temp_dir, "project.pto")
         self._run_hugin_command(["pto_gen", "-o", project_file] + image_paths)
-        # **IMPROVED**: Apply lens and position data in a dedicated step.
-        self._apply_lens_and_position_data(project_file, capture_points)
+        # Apply lens and position data with EXIF-based camera parameters
+        self._apply_lens_and_position_data(project_file, capture_points, original_exif_data)
         return project_file
     
-    def _apply_lens_and_position_data(self, project_file: str, capture_points: List[Dict]):
-        """Apply camera positions without modifying image parameters that could cause dimension issues."""
+    def _apply_lens_and_position_data(self, project_file: str, capture_points: List[Dict], original_exif_data: List[Dict] = None):
+        """Apply camera positions and iPhone-specific lens parameters using EXIF data."""
         with open(project_file, 'r') as f:
             lines = f.readlines()
 
@@ -213,26 +230,105 @@ class HuginPanoramaStitcher:
                 point = capture_points[image_idx]
                 yaw, pitch, roll = point.get('azimuth', 0), point.get('elevation', 0), 0
                 
-                # Only modify position parameters, keep original image specs
+                # Extract camera parameters from EXIF if available
+                camera_params = self._extract_camera_parameters_from_exif(
+                    original_exif_data[image_idx] if original_exif_data and image_idx < len(original_exif_data) else None
+                )
+                
+                # Parse existing line and remove old parameters
                 parts = line.strip().split()
                 new_parts = []
                 
                 for part in parts:
-                    # Remove existing position parameters
-                    if not (part.startswith('y') or part.startswith('p') or part.startswith('r')):
+                    # Remove existing position and lens parameters to replace with optimized ones
+                    if not (part.startswith(('y', 'p', 'r', 'v', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 't'))):
                         new_parts.append(part)
                 
-                # Add position parameters at the end
+                # Add camera position parameters
                 new_parts.extend([f'y{yaw:.3f}', f'p{pitch:.3f}', f'r{roll:.3f}'])
+                
+                # Add iPhone-specific lens parameters
+                new_parts.extend([
+                    f'v{camera_params["fov"]:.1f}',  # Field of view
+                    f'a{camera_params["distortion_a"]:.4f}',  # Barrel distortion (k1)
+                    f'b{camera_params["distortion_b"]:.4f}',  # Quadratic distortion (k2)  
+                    f'c{camera_params["distortion_c"]:.4f}',  # Cubic distortion (k3)
+                    f'd{camera_params["shift_d"]:.4f}',      # Horizontal decentering
+                    f'e{camera_params["shift_e"]:.4f}',      # Vertical decentering
+                    f'f{camera_params["shear_f"]:.6f}',      # Shear factor
+                    f'g{camera_params["shear_g"]:.6f}',      # Shear factor
+                    f't{camera_params["tilt_t"]:.6f}',       # Tilt factor
+                ])
                 
                 line = ' '.join(new_parts) + '\n'
                 image_idx += 1
+                logger.info(f"📐 Applied iPhone camera parameters for image {image_idx}: FOV={camera_params['fov']:.1f}°, distortion=({camera_params['distortion_a']:.3f}, {camera_params['distortion_b']:.3f}, {camera_params['distortion_c']:.3f})")
             
             modified_lines.append(line)
         
         with open(project_file, 'w') as f:
             f.writelines(modified_lines)
-        logger.info("Applied camera positions to PTO file without modifying image dimensions.")
+        logger.info("Applied camera positions and iPhone lens parameters to PTO file.")
+    
+    def _extract_camera_parameters_from_exif(self, exif_data: Dict) -> Dict:
+        """Extract actual camera parameters from EXIF data or use iPhone defaults."""
+        if not exif_data:
+            logger.info("📱 Using iPhone 15 Pro Ultra-Wide default parameters")
+            return {
+                "fov": self.iphone_15_pro_ultrawide["fov_horizontal"],
+                "distortion_a": self.iphone_15_pro_ultrawide["distortion_k1"],
+                "distortion_b": self.iphone_15_pro_ultrawide["distortion_k2"],
+                "distortion_c": self.iphone_15_pro_ultrawide["distortion_k3"],
+                "shift_d": 0.0,      # No decentering for iPhone
+                "shift_e": 0.0,      # No decentering for iPhone
+                "shear_f": 0.0,      # No shear for iPhone
+                "shear_g": 0.0,      # No shear for iPhone
+                "tilt_t": 0.0,       # No tilt for iPhone
+            }
+        
+        # Extract actual camera parameters from EXIF
+        exif_main = exif_data.get("Exif", {})
+        exif_0th = exif_data.get("0th", {})
+        
+        # Get focal length (tag 37386) and convert to FOV
+        focal_length_raw = exif_main.get(37386, (130, 100))  # Default 1.3mm
+        if isinstance(focal_length_raw, tuple) and len(focal_length_raw) == 2:
+            focal_length_mm = focal_length_raw[0] / focal_length_raw[1]
+        else:
+            focal_length_mm = 1.3  # iPhone 15 Pro Ultra-Wide default
+        
+        # Calculate FOV from focal length (35mm equivalent sensor diagonal ~43.3mm)
+        # For ultra-wide: focal_length ≈ 1.3mm gives ~120° FOV
+        if focal_length_mm <= 1.5:  # Ultra-wide camera
+            fov = 120.0
+            distortion_a = -0.35
+            distortion_b = 0.20
+            distortion_c = -0.08
+            logger.info(f"📱 Detected iPhone Ultra-Wide camera: {focal_length_mm}mm focal length")
+        elif focal_length_mm <= 3.0:  # Wide camera  
+            fov = 78.0
+            distortion_a = -0.15
+            distortion_b = 0.10
+            distortion_c = -0.03
+            logger.info(f"📱 Detected iPhone Wide camera: {focal_length_mm}mm focal length")
+        else:  # Telephoto or other
+            fov = 65.0
+            distortion_a = -0.05
+            distortion_b = 0.02
+            distortion_c = -0.01
+            logger.info(f"📱 Detected iPhone Telephoto camera: {focal_length_mm}mm focal length")
+        
+        return {
+            "fov": fov,
+            "distortion_a": distortion_a,
+            "distortion_b": distortion_b,
+            "distortion_c": distortion_c,
+            "shift_d": 0.0,      # No decentering for iPhone
+            "shift_e": 0.0,      # No decentering for iPhone  
+            "shear_f": 0.0,      # No shear for iPhone
+            "shear_g": 0.0,      # No shear for iPhone
+            "tilt_t": 0.0,       # No tilt for iPhone
+        }
 
     def _find_control_points(self, project_file: str) -> str:
         logger.info("Starting control point detection...")
@@ -343,7 +439,7 @@ class HuginPanoramaStitcher:
             "geometricConsistency": float(np.clip(geometric_consistency, 0, 1)),
             "processingTime": float(processing_time),
             "resolution": f"{panorama.shape[1]}x{panorama.shape[0]}",
-            "processor": "Hugin (iPhone 15 Pro Ultra-Wide)",
+            "processor": "Hugin (iPhone Optimized with Original EXIF)",
         }
     
     def _parse_control_points(self, project_file: str) -> list:
