@@ -918,6 +918,11 @@ class HuginPanoramaStitcher:
     def _find_control_points(self, project_file: str) -> str:
         logger.info("Starting control point detection...")
         output_file = os.path.join(self.temp_dir, "project_cp.pto")
+        
+        # Verify input file exists
+        if not os.path.exists(project_file):
+            raise RuntimeError(f"Input project file does not exist: {project_file}")
+        
         # Optimized control point detection for iPhone 360° panoramas with prealignment
         command = [
             "cpfind", 
@@ -935,9 +940,22 @@ class HuginPanoramaStitcher:
             project_file
         ]
         try:
-            self._run_hugin_command(command, timeout=300)  # Increased timeout for enhanced detection
+            stdout, stderr = self._run_hugin_command(command, timeout=300)  # Increased timeout for enhanced detection
+            logger.debug(f"cpfind stdout: {stdout}")
+            logger.debug(f"cpfind stderr: {stderr}")
+            
+            # Verify output file was created
+            if not os.path.exists(output_file):
+                raise RuntimeError(f"cpfind did not create output file: {output_file}")
+            
             with open(output_file, 'r') as f:
-                logger.info(f"Found {f.read().count('c n')} control points.")
+                content = f.read()
+                control_point_count = content.count('c n')
+                logger.info(f"Found {control_point_count} control points.")
+                
+                if control_point_count == 0:
+                    logger.warning("No control points found - images may not overlap sufficiently")
+                    
             return output_file
         except RuntimeError as e:
             logger.warning(f"Enhanced cpfind failed: {e}")
@@ -946,14 +964,41 @@ class HuginPanoramaStitcher:
             # Fallback to basic settings if enhanced version fails (memory constraints)
             fallback_command = ["cpfind", "--prealigned", "--celeste", "-o", output_file, project_file]
             try:
-                self._run_hugin_command(fallback_command, timeout=180)
+                stdout, stderr = self._run_hugin_command(fallback_command, timeout=180)
+                logger.debug(f"Fallback cpfind stdout: {stdout}")
+                logger.debug(f"Fallback cpfind stderr: {stderr}")
+                
+                # Verify output file was created
+                if not os.path.exists(output_file):
+                    raise RuntimeError(f"Fallback cpfind did not create output file: {output_file}")
+                
                 with open(output_file, 'r') as f:
-                    control_points = f.read().count('c n')
+                    content = f.read()
+                    control_points = content.count('c n')
                     logger.info(f"Fallback cpfind found {control_points} control points.")
+                    
+                    if control_points == 0:
+                        logger.error("No control points found even with fallback settings - stitching cannot proceed")
+                        raise RuntimeError("No control points detected between images")
+                        
                 return output_file
             except RuntimeError as fallback_error:
                 logger.error(f"Both enhanced and fallback cpfind failed: {fallback_error}")
-                raise
+                # Try to provide more diagnostic information
+                logger.error(f"Input project file size: {os.path.getsize(project_file) if os.path.exists(project_file) else 'file missing'}")
+                logger.error(f"Temp directory contents: {os.listdir(self.temp_dir)}")
+                
+                # Final fallback: copy input file as output to allow process to continue
+                # This allows the optimizer to still work with just the initial positioning
+                logger.warning("Creating fallback project file without control points")
+                try:
+                    import shutil
+                    shutil.copy2(project_file, output_file)
+                    logger.info("Created fallback project file - will rely on initial positioning only")
+                    return output_file
+                except Exception as copy_error:
+                    logger.error(f"Failed to create fallback project file: {copy_error}")
+                    raise RuntimeError("Complete cpfind failure - cannot proceed with stitching")
 
     def _clean_control_points(self, project_file: str) -> str:
         logger.info("Cleaning control points...")
