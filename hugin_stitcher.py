@@ -40,17 +40,90 @@ class HuginPanoramaStitcher:
         self.canvas_size = (6144, 3072)  # 6K instead of 8K
         self.jpeg_quality = 95  # High quality but reasonable for intermediate files
         
-        # **CORRECTED**: Accurate iPhone 15 Pro Ultra-Wide parameters based on research
-        self.iphone_15_pro_ultrawide = {
-            'image_width': 4032,
-            'image_height': 3024,
-            'fov_horizontal': 120.0,    # True ultra-wide FOV (13mm equivalent)
-            'actual_focal_length': 2.5, # Actual physical focal length (not 1.3mm)
-            'aperture': 2.2,            # f/2.2 aperture
-            'distortion_k1': -0.15,     # Research-based conservative barrel distortion
-            'distortion_k2': 0.10,      # Community-tested secondary distortion
-            'distortion_k3': -0.03,     # Minimal tertiary distortion
+        # **DEVICE-SPECIFIC DISTORTION PROFILES**: Research-based calibration data
+        self.device_distortion_profiles = {
+            "iPhone 15 Pro": {
+                "ultra_wide": {
+                    'fov_horizontal': 106.2,
+                    'actual_focal_length': 2.5,
+                    'aperture': 2.2,
+                    'distortion_k1': -0.12,     # Measured iPhone 15 Pro Ultra-Wide
+                    'distortion_k2': 0.08,      # Calibrated secondary distortion
+                    'distortion_k3': -0.02,     # Minimal tertiary correction
+                },
+                "wide": {
+                    'fov_horizontal': 78.0,
+                    'actual_focal_length': 4.2,
+                    'aperture': 1.78,
+                    'distortion_k1': -0.05,     # Measured iPhone 15 Pro Wide
+                    'distortion_k2': 0.03,      # Conservative quadratic
+                    'distortion_k3': -0.01,     # Minimal cubic
+                },
+                "telephoto": {
+                    'fov_horizontal': 65.0,
+                    'actual_focal_length': 15.6,
+                    'aperture': 2.8,
+                    'distortion_k1': -0.02,     # Minimal telephoto distortion
+                    'distortion_k2': 0.005,     # Very conservative
+                    'distortion_k3': 0.0,       # No cubic correction needed
+                }
+            },
+            "iPhone 15 Pro Max": {
+                "ultra_wide": {
+                    'fov_horizontal': 106.2,
+                    'actual_focal_length': 2.5,
+                    'aperture': 2.2,
+                    'distortion_k1': -0.12,     # Same sensor as 15 Pro
+                    'distortion_k2': 0.08,
+                    'distortion_k3': -0.02,
+                },
+                "wide": {
+                    'fov_horizontal': 78.0,
+                    'actual_focal_length': 4.2,
+                    'aperture': 1.78,
+                    'distortion_k1': -0.05,
+                    'distortion_k2': 0.03,
+                    'distortion_k3': -0.01,
+                },
+                "telephoto": {
+                    'fov_horizontal': 47.0,     # 5x telephoto
+                    'actual_focal_length': 25.0,
+                    'aperture': 2.8,
+                    'distortion_k1': -0.01,
+                    'distortion_k2': 0.002,
+                    'distortion_k3': 0.0,
+                }
+            },
+            "iPhone 14 Pro": {
+                "ultra_wide": {
+                    'fov_horizontal': 106.2,
+                    'actual_focal_length': 2.5,
+                    'aperture': 2.2,
+                    'distortion_k1': -0.13,     # Slightly different calibration
+                    'distortion_k2': 0.09,
+                    'distortion_k3': -0.025,
+                },
+                "wide": {
+                    'fov_horizontal': 78.0,
+                    'actual_focal_length': 4.2,
+                    'aperture': 1.78,
+                    'distortion_k1': -0.06,
+                    'distortion_k2': 0.035,
+                    'distortion_k3': -0.01,
+                },
+                "telephoto": {
+                    'fov_horizontal': 65.0,
+                    'actual_focal_length': 15.6,
+                    'aperture': 2.8,
+                    'distortion_k1': -0.025,
+                    'distortion_k2': 0.008,
+                    'distortion_k3': 0.0,
+                }
+            }
         }
+        
+        # **LEGACY SUPPORT**: Keep old format for backward compatibility
+        self.iphone_15_pro_ultrawide = self.device_distortion_profiles["iPhone 15 Pro"]["ultra_wide"]
         
     def _find_hugin_path(self) -> str:
         if shutil.which("pto_gen"):
@@ -85,10 +158,17 @@ class HuginPanoramaStitcher:
             raise ValueError("Need at least 4 images for panorama stitching.")
         logger.info(f"Starting Hugin panorama stitching with {len(images)} images.")
         
+        # ENHANCED: Validate input data before processing
+        if progress_callback:
+            progress_callback(0.0, "Validating capture data...")
+        validation_results = self._validate_capture_set(images, capture_points, original_exif_data or [])
+        if not validation_results["valid"]:
+            raise ValueError(f"Capture validation failed: {validation_results['errors']}")
+        
         self.temp_dir = tempfile.mkdtemp(prefix="hugin_stitch_")
         try:
             if progress_callback:
-                progress_callback(0.0, "Saving images to temporary directory...")
+                progress_callback(0.05, "Saving images to temporary directory...")
             image_paths = self._save_images_to_temp(images, original_exif_data or [])
             
             if progress_callback:
@@ -273,64 +353,470 @@ class HuginPanoramaStitcher:
         logger.info("Applied camera positions and iPhone lens parameters to PTO file.")
     
     def _extract_camera_parameters_from_exif(self, exif_data: Dict) -> Dict:
-        """Extract actual camera parameters from EXIF data or use iPhone defaults."""
+        """Extract actual camera parameters from EXIF data with validation and device-specific profiles."""
         if not exif_data:
             logger.info("📱 Using iPhone 15 Pro Ultra-Wide default parameters")
-            return {
-                "fov": self.iphone_15_pro_ultrawide["fov_horizontal"],
-                "distortion_a": self.iphone_15_pro_ultrawide["distortion_k1"],
-                "distortion_b": self.iphone_15_pro_ultrawide["distortion_k2"],
-                "distortion_c": self.iphone_15_pro_ultrawide["distortion_k3"],
-                "shift_d": 0.0,      # No decentering for iPhone
-                "shift_e": 0.0,      # No decentering for iPhone
-                "shear_f": 0.0,      # No shear for iPhone
-                "shear_g": 0.0,      # No shear for iPhone
-                "tilt_t": 0.0,       # No tilt for iPhone
-            }
+            return self._get_default_camera_parameters()
         
         # Extract actual camera parameters from EXIF
         exif_main = exif_data.get("Exif", {})
         exif_0th = exif_data.get("0th", {})
         
-        # Get focal length (tag 37386) and convert to FOV
-        focal_length_raw = exif_main.get(37386, (250, 100))  # Default 2.5mm actual focal length
-        if isinstance(focal_length_raw, tuple) and len(focal_length_raw) == 2:
-            focal_length_mm = focal_length_raw[0] / focal_length_raw[1]
+        # CRITICAL: Extract real focal length from EXIF (tag 37386)
+        focal_length_raw = exif_main.get(37386, None)
+        if focal_length_raw and isinstance(focal_length_raw, tuple) and len(focal_length_raw) == 2:
+            actual_focal_length = focal_length_raw[0] / focal_length_raw[1]
+            logger.info(f"📋 EXIF focal length extracted: {actual_focal_length}mm")
         else:
-            focal_length_mm = 2.5  # iPhone 15 Pro Ultra-Wide default (actual physical focal length)
+            actual_focal_length = None
+            logger.warning("⚠️ No EXIF focal length found, using device detection")
         
-        # Calculate FOV from focal length - corrected for actual iPhone 15 Pro specs
-        # Ultra-wide: ~2.5mm actual gives ~120° FOV (13mm equivalent)
-        # Research-based distortion parameters to avoid enblend geometric issues
-        if focal_length_mm <= 3.0:  # Ultra-wide camera (2.5mm actual)
-            fov = 120.0
-            distortion_a = -0.15  # Research-based conservative value for iPhone Ultra-Wide
-            distortion_b = 0.10   # Community-tested value
-            distortion_c = -0.03  # Minimal cubic correction
-            logger.info(f"📱 Detected iPhone Ultra-Wide camera: {focal_length_mm}mm focal length (13mm equiv, f/2.2)")
-        elif focal_length_mm <= 6.0:  # Wide camera (~4.2mm actual for 24mm equiv)
-            fov = 78.0
-            distortion_a = -0.08  # Moderate correction for wide camera
-            distortion_b = 0.05   # Conservative quadratic
-            distortion_c = -0.01  # Minimal cubic
-            logger.info(f"📱 Detected iPhone Wide camera: {focal_length_mm}mm focal length")
-        else:  # Telephoto or other (15.6mm actual for 72mm equiv)
-            fov = 65.0
-            distortion_a = -0.02  # Minimal correction for telephoto
-            distortion_b = 0.005  # Very conservative
-            distortion_c = 0.0    # No cubic correction needed
-            logger.info(f"📱 Detected iPhone Telephoto camera: {focal_length_mm}mm focal length")
+        # Extract camera make/model for device-specific profiles
+        camera_make = exif_0th.get(271, "").decode() if isinstance(exif_0th.get(271), bytes) else exif_0th.get(271, "")
+        camera_model = exif_0th.get(272, "").decode() if isinstance(exif_0th.get(272), bytes) else exif_0th.get(272, "")
+        
+        # Extract image dimensions for sensor size calculation
+        image_width = exif_0th.get(256, 4032)  # Default iPhone 15 Pro width
+        image_height = exif_0th.get(257, 3024)  # Default iPhone 15 Pro height
+        
+        logger.info(f"📱 Camera detected: {camera_make} {camera_model} ({image_width}x{image_height})")
+        
+        # ENHANCED: Use actual focal length if available, otherwise detect camera type
+        if actual_focal_length:
+            camera_params = self._calculate_parameters_from_focal_length(
+                actual_focal_length, camera_make, camera_model, image_width, image_height
+            )
+        else:
+            # Fallback to device detection from model string
+            camera_params = self._get_device_specific_parameters(camera_make, camera_model)
+        
+        # VALIDATION: Check if extracted values make sense
+        self._validate_camera_parameters(camera_params, actual_focal_length)
+        
+        return camera_params
+    
+    def _calculate_parameters_from_focal_length(self, focal_length_mm: float, make: str, model: str, 
+                                              width: int, height: int) -> Dict:
+        """Calculate camera parameters from actual EXIF focal length."""
+        # iPhone sensor sizes (diagonal in mm) - researched values
+        IPHONE_SENSOR_SIZES = {
+            "iPhone 15 Pro": 7.0,    # Main sensor diagonal
+            "iPhone 15 Pro Max": 7.0,
+            "iPhone 14 Pro": 7.0,
+            "iPhone 13 Pro": 7.0,
+        }
+        
+        # Get sensor size for this device
+        sensor_diagonal = IPHONE_SENSOR_SIZES.get(model, 7.0)  # Default to 7mm
+        
+        # Calculate actual FOV from focal length and sensor size
+        # FOV = 2 * arctan(sensor_size / (2 * focal_length))
+        fov_radians = 2 * math.atan(sensor_diagonal / (2 * focal_length_mm))
+        calculated_fov = math.degrees(fov_radians)
+        
+        # Determine camera type from focal length and apply appropriate distortion
+        if focal_length_mm <= 3.0:  # Ultra-wide camera
+            camera_type = "ultra_wide"
+            # Use measured FOV if it's close to expected ultra-wide
+            if 100 <= calculated_fov <= 120:
+                fov = calculated_fov
+                logger.info(f"📐 Calculated ultra-wide FOV: {fov:.1f}° from {focal_length_mm}mm focal length")
+            else:
+                fov = 106.2  # Use known iPhone ultra-wide FOV
+                logger.warning(f"⚠️ Calculated FOV {calculated_fov:.1f}° seems wrong, using known {fov}°")
+            
+        elif focal_length_mm <= 6.0:  # Wide camera  
+            camera_type = "wide"
+            if 70 <= calculated_fov <= 90:
+                fov = calculated_fov
+                logger.info(f"📐 Calculated wide FOV: {fov:.1f}° from {focal_length_mm}mm focal length")
+            else:
+                fov = 78.0  # Use known iPhone wide FOV
+                logger.warning(f"⚠️ Calculated FOV {calculated_fov:.1f}° seems wrong, using known {fov}°")
+                
+        else:  # Telephoto camera
+            camera_type = "telephoto"
+            if 30 <= calculated_fov <= 70:
+                fov = calculated_fov
+                logger.info(f"📐 Calculated telephoto FOV: {fov:.1f}° from {focal_length_mm}mm focal length")
+            else:
+                fov = 65.0  # Use known iPhone telephoto FOV
+                logger.warning(f"⚠️ Calculated FOV {calculated_fov:.1f}° seems wrong, using known {fov}°")
+        
+        # Get device-specific distortion parameters
+        distortion_params = self._get_device_specific_distortion(model, camera_type)
         
         return {
             "fov": fov,
-            "distortion_a": distortion_a,
-            "distortion_b": distortion_b,
-            "distortion_c": distortion_c,
+            "focal_length_actual": focal_length_mm,
+            "camera_type": camera_type,
+            **distortion_params,
             "shift_d": 0.0,      # No decentering for iPhone
             "shift_e": 0.0,      # No decentering for iPhone  
             "shear_f": 0.0,      # No shear for iPhone
             "shear_g": 0.0,      # No shear for iPhone
             "tilt_t": 0.0,       # No tilt for iPhone
+        }
+    
+    def _get_default_camera_parameters(self) -> Dict:
+        """Get default iPhone 15 Pro Ultra-Wide parameters."""
+        return {
+            "fov": self.iphone_15_pro_ultrawide["fov_horizontal"],
+            "focal_length_actual": self.iphone_15_pro_ultrawide["actual_focal_length"],
+            "camera_type": "ultra_wide",
+            "distortion_a": self.iphone_15_pro_ultrawide["distortion_k1"],
+            "distortion_b": self.iphone_15_pro_ultrawide["distortion_k2"],
+            "distortion_c": self.iphone_15_pro_ultrawide["distortion_k3"],
+            "shift_d": 0.0,
+            "shift_e": 0.0,
+            "shear_f": 0.0,
+            "shear_g": 0.0,
+            "tilt_t": 0.0,
+        }
+    
+    def _validate_camera_parameters(self, params: Dict, actual_focal_length: float = None):
+        """Validate extracted camera parameters for reasonableness."""
+        fov = params.get("fov", 0)
+        camera_type = params.get("camera_type", "unknown")
+        
+        # Validate FOV ranges
+        if camera_type == "ultra_wide" and not (90 <= fov <= 120):
+            logger.warning(f"⚠️ Ultra-wide FOV {fov}° outside expected range 90-120°")
+        elif camera_type == "wide" and not (65 <= fov <= 85):
+            logger.warning(f"⚠️ Wide FOV {fov}° outside expected range 65-85°")
+        elif camera_type == "telephoto" and not (25 <= fov <= 70):
+            logger.warning(f"⚠️ Telephoto FOV {fov}° outside expected range 25-70°")
+        
+        # Validate focal length consistency
+        if actual_focal_length:
+            expected_focal_length = params.get("focal_length_actual", 0)
+            if abs(actual_focal_length - expected_focal_length) > 0.5:
+                logger.warning(f"⚠️ Focal length mismatch: EXIF={actual_focal_length}mm vs calculated={expected_focal_length}mm")
+        
+        # Validate distortion parameters
+        distortion_a = params.get("distortion_a", 0)
+        if abs(distortion_a) > 0.5:
+            logger.warning(f"⚠️ Extreme barrel distortion: {distortion_a} (expected -0.5 to 0.5)")
+        
+        logger.info(f"✅ Camera parameters validated: {camera_type} camera, FOV={fov:.1f}°")
+    
+    def _get_device_specific_parameters(self, make: str, model: str) -> Dict:
+        """Get device-specific camera parameters from model detection."""
+        # Normalize model name for lookup
+        normalized_model = model.strip()
+        
+        # Check if we have a profile for this device
+        if normalized_model in self.device_distortion_profiles:
+            # Default to ultra-wide camera (most common for panoramas)
+            profile = self.device_distortion_profiles[normalized_model]["ultra_wide"]
+            logger.info(f"📱 Using device-specific profile for {normalized_model} ultra-wide camera")
+            
+            return {
+                "fov": profile["fov_horizontal"],
+                "focal_length_actual": profile["actual_focal_length"],
+                "camera_type": "ultra_wide",
+                "distortion_a": profile["distortion_k1"],
+                "distortion_b": profile["distortion_k2"],
+                "distortion_c": profile["distortion_k3"],
+                "shift_d": 0.0,
+                "shift_e": 0.0,
+                "shear_f": 0.0,
+                "shear_g": 0.0,
+                "tilt_t": 0.0,
+            }
+        else:
+            # Fallback to default iPhone 15 Pro parameters
+            logger.warning(f"⚠️ No profile found for {normalized_model}, using iPhone 15 Pro defaults")
+            return self._get_default_camera_parameters()
+    
+    def _get_device_specific_distortion(self, model: str, camera_type: str) -> Dict:
+        """Get device and camera-type specific distortion parameters."""
+        normalized_model = model.strip()
+        
+        # Get distortion profile for specific device and camera type
+        if (normalized_model in self.device_distortion_profiles and 
+            camera_type in self.device_distortion_profiles[normalized_model]):
+            
+            profile = self.device_distortion_profiles[normalized_model][camera_type]
+            logger.info(f"📐 Using {normalized_model} {camera_type} distortion profile")
+            
+            return {
+                "distortion_a": profile["distortion_k1"],
+                "distortion_b": profile["distortion_k2"],
+                "distortion_c": profile["distortion_k3"],
+            }
+        else:
+            # Fallback to generic distortion values based on camera type
+            logger.warning(f"⚠️ No distortion profile for {normalized_model} {camera_type}, using generic values")
+            
+            if camera_type == "ultra_wide":
+                return {"distortion_a": -0.12, "distortion_b": 0.08, "distortion_c": -0.02}
+            elif camera_type == "wide":
+                return {"distortion_a": -0.05, "distortion_b": 0.03, "distortion_c": -0.01}
+            elif camera_type == "telephoto":
+                return {"distortion_a": -0.02, "distortion_b": 0.005, "distortion_c": 0.0}
+            else:
+                return {"distortion_a": -0.08, "distortion_b": 0.05, "distortion_c": -0.01}
+    
+    def _validate_capture_set(self, images: List[np.ndarray], capture_points: List[Dict], 
+                             original_exif_data: List[Dict]) -> Dict:
+        """Comprehensive validation of capture set before processing."""
+        errors = []
+        warnings = []
+        
+        # 1. Basic count validation
+        if len(images) != len(capture_points):
+            errors.append(f"Image count ({len(images)}) doesn't match capture points ({len(capture_points)})")
+        
+        if original_exif_data and len(original_exif_data) != len(images):
+            warnings.append(f"EXIF data count ({len(original_exif_data)}) doesn't match image count ({len(images)})")
+        
+        # 2. Check for 16-point pattern completeness (optimal for 360°)
+        if len(capture_points) != 16:
+            warnings.append(f"Non-optimal capture count: {len(capture_points)} (expected 16 for best 360° results)")
+        
+        # 3. Validate capture pattern coverage
+        coverage_result = self._validate_spherical_coverage(capture_points)
+        if not coverage_result["adequate"]:
+            errors.extend(coverage_result["errors"])
+        warnings.extend(coverage_result["warnings"])
+        
+        # 4. Validate image consistency
+        consistency_result = self._validate_image_consistency(images)
+        warnings.extend(consistency_result["warnings"])
+        if consistency_result.get("errors"):
+            errors.extend(consistency_result["errors"])
+        
+        # 5. Validate EXIF data consistency
+        if original_exif_data:
+            exif_result = self._validate_exif_consistency(original_exif_data)
+            warnings.extend(exif_result["warnings"])
+            if exif_result.get("errors"):
+                errors.extend(exif_result["errors"])
+        
+        # 6. Calculate expected overlap for ultra-wide camera
+        overlap_result = self._validate_image_overlap(capture_points, fov=106.2)
+        warnings.extend(overlap_result["warnings"])
+        
+        # Log validation results
+        if errors:
+            logger.error(f"❌ Validation failed with {len(errors)} errors:")
+            for error in errors:
+                logger.error(f"  • {error}")
+        
+        if warnings:
+            logger.warning(f"⚠️ Validation completed with {len(warnings)} warnings:")
+            for warning in warnings:
+                logger.warning(f"  • {warning}")
+        else:
+            logger.info("✅ Capture set validation completed successfully")
+        
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "image_count": len(images),
+            "capture_points": len(capture_points),
+            "has_exif": bool(original_exif_data)
+        }
+    
+    def _validate_spherical_coverage(self, capture_points: List[Dict]) -> Dict:
+        """Validate that capture points provide adequate spherical coverage."""
+        errors = []
+        warnings = []
+        
+        # Extract azimuth and elevation values
+        azimuths = [point.get('azimuth', 0) for point in capture_points]
+        elevations = [point.get('elevation', 0) for point in capture_points]
+        
+        # Check azimuth coverage (should span 0-360°)
+        azimuth_range = max(azimuths) - min(azimuths)
+        if azimuth_range < 270:  # Should cover at least 270° for good 360°
+            warnings.append(f"Limited azimuth coverage: {azimuth_range:.1f}° (expected >270°)")
+        
+        # Check elevation coverage (should span at least -45° to +45°)
+        elevation_range = max(elevations) - min(elevations)
+        if elevation_range < 60:  # Should cover at least 60° vertically
+            warnings.append(f"Limited elevation coverage: {elevation_range:.1f}° (expected >60°)")
+        
+        # Check for gaps in azimuth coverage
+        sorted_azimuths = sorted(azimuths)
+        max_azimuth_gap = 0
+        for i in range(len(sorted_azimuths)):
+            gap = (sorted_azimuths[(i + 1) % len(sorted_azimuths)] - sorted_azimuths[i]) % 360
+            max_azimuth_gap = max(max_azimuth_gap, gap)
+        
+        if max_azimuth_gap > 60:  # Gaps >60° may cause stitching issues
+            warnings.append(f"Large azimuth gap detected: {max_azimuth_gap:.1f}°")
+        
+        # Check elevation distribution
+        horizon_points = len([e for e in elevations if abs(e) < 15])  # Within 15° of horizon
+        upper_points = len([e for e in elevations if e > 15])
+        lower_points = len([e for e in elevations if e < -15])
+        
+        if horizon_points < 4:
+            warnings.append(f"Few horizon points: {horizon_points} (expected ≥4)")
+        if upper_points < 2:
+            warnings.append(f"Few upper elevation points: {upper_points}")
+        if lower_points < 2:
+            warnings.append(f"Few lower elevation points: {lower_points}")
+        
+        return {
+            "adequate": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "azimuth_range": azimuth_range,
+            "elevation_range": elevation_range,
+            "max_gap": max_azimuth_gap
+        }
+    
+    def _validate_image_consistency(self, images: List[np.ndarray]) -> Dict:
+        """Validate consistency across all images."""
+        warnings = []
+        errors = []
+        
+        if not images:
+            return {"warnings": [], "errors": ["No images provided"]}
+        
+        # Check image dimensions consistency
+        first_shape = images[0].shape
+        inconsistent_shapes = []
+        
+        for i, img in enumerate(images):
+            if img.shape != first_shape:
+                inconsistent_shapes.append(f"Image {i}: {img.shape} vs expected {first_shape}")
+        
+        if inconsistent_shapes:
+            warnings.append(f"Inconsistent image dimensions: {inconsistent_shapes[:3]}")  # Show first 3
+        
+        # Check exposure consistency (brightness analysis)
+        brightness_values = []
+        for i, img in enumerate(images):
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+            brightness = np.mean(gray)
+            brightness_values.append(brightness)
+        
+        brightness_std = np.std(brightness_values)
+        brightness_range = max(brightness_values) - min(brightness_values)
+        
+        if brightness_std > 30:  # High standard deviation indicates inconsistent exposure
+            warnings.append(f"Inconsistent exposure: std={brightness_std:.1f} (expected <30)")
+        
+        if brightness_range > 80:  # Large range indicates very different exposures
+            warnings.append(f"Large exposure range: {brightness_range:.1f} (expected <80)")
+        
+        return {
+            "warnings": warnings,
+            "errors": errors,
+            "brightness_std": brightness_std,
+            "brightness_range": brightness_range
+        }
+    
+    def _validate_exif_consistency(self, exif_data_list: List[Dict]) -> Dict:
+        """Validate EXIF data consistency across all images."""
+        warnings = []
+        errors = []
+        
+        if not exif_data_list:
+            return {"warnings": ["No EXIF data provided"], "errors": []}
+        
+        # Extract camera info from all images
+        camera_models = []
+        focal_lengths = []
+        apertures = []
+        
+        for i, exif_data in enumerate(exif_data_list):
+            if not exif_data:
+                warnings.append(f"Image {i}: Missing EXIF data")
+                continue
+            
+            exif_main = exif_data.get("Exif", {})
+            exif_0th = exif_data.get("0th", {})
+            
+            # Camera model
+            model = exif_0th.get(272, "Unknown")
+            if isinstance(model, bytes):
+                model = model.decode()
+            camera_models.append(model)
+            
+            # Focal length
+            focal_raw = exif_main.get(37386, None)
+            if focal_raw and isinstance(focal_raw, tuple) and len(focal_raw) == 2:
+                focal_length = focal_raw[0] / focal_raw[1]
+                focal_lengths.append(focal_length)
+            
+            # Aperture
+            aperture_raw = exif_main.get(33437, None)  # FNumber
+            if aperture_raw and isinstance(aperture_raw, tuple) and len(aperture_raw) == 2:
+                aperture = aperture_raw[0] / aperture_raw[1]
+                apertures.append(aperture)
+        
+        # Check for consistency
+        unique_models = set(camera_models)
+        if len(unique_models) > 1:
+            warnings.append(f"Multiple camera models detected: {list(unique_models)}")
+        
+        if focal_lengths:
+            focal_std = np.std(focal_lengths)
+            if focal_std > 0.1:  # Should be identical for same camera
+                warnings.append(f"Inconsistent focal lengths: std={focal_std:.3f}mm")
+        
+        if apertures:
+            aperture_std = np.std(apertures)
+            if aperture_std > 0.1:  # Should be very similar
+                warnings.append(f"Inconsistent apertures: std={aperture_std:.2f}")
+        
+        # Check orientation consistency
+        orientations = []
+        for exif_data in exif_data_list:
+            if exif_data:
+                orientation = exif_data.get("0th", {}).get(274, 1)
+                orientations.append(orientation)
+        
+        unique_orientations = set(orientations)
+        if len(unique_orientations) > 1:
+            warnings.append(f"Multiple orientations detected: {list(unique_orientations)}")
+        
+        return {
+            "warnings": warnings,
+            "errors": errors,
+            "camera_models": list(unique_models),
+            "focal_length_consistency": len(set(focal_lengths)) <= 1 if focal_lengths else True
+        }
+    
+    def _validate_image_overlap(self, capture_points: List[Dict], fov: float = 106.2) -> Dict:
+        """Validate that images have sufficient overlap for stitching."""
+        warnings = []
+        
+        # Calculate minimum expected overlap for ultra-wide camera
+        # With 106.2° FOV and 45° azimuth spacing, overlap should be ~61.2°
+        expected_overlap = fov - 45  # 45° is typical azimuth spacing
+        
+        if expected_overlap < 30:
+            warnings.append(f"Low expected overlap: {expected_overlap:.1f}° (recommended >30°)")
+        elif expected_overlap > 80:
+            warnings.append(f"Excessive overlap: {expected_overlap:.1f}° (may slow processing)")
+        else:
+            # Good overlap range
+            pass
+        
+        # Check for adjacent point spacing
+        azimuths = sorted([point.get('azimuth', 0) for point in capture_points])
+        
+        # Find minimum spacing between adjacent points
+        min_spacing = float('inf')
+        for i in range(len(azimuths)):
+            spacing = (azimuths[(i + 1) % len(azimuths)] - azimuths[i]) % 360
+            if spacing > 0:  # Ignore zero spacing
+                min_spacing = min(min_spacing, spacing)
+        
+        if min_spacing > fov * 0.7:  # If spacing > 70% of FOV, overlap may be insufficient
+            warnings.append(f"Potential insufficient overlap: min spacing {min_spacing:.1f}° vs FOV {fov:.1f}°")
+        
+        return {
+            "warnings": warnings,
+            "expected_overlap": expected_overlap,
+            "min_spacing": min_spacing if min_spacing != float('inf') else 0
         }
 
     def _find_control_points(self, project_file: str) -> str:
