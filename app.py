@@ -48,9 +48,11 @@ class JobState:
 class PanoramaProcessor:
     """Orchestrates panorama processing using the Hugin stitcher."""
     
-    def __init__(self):
-        self.stitcher = HuginPanoramaStitcher()
-        logger.info("Hugin-based stitcher initialized successfully.")
+    def __init__(self, output_resolution: str = None):
+        # Allow override via environment variable for deployment flexibility
+        resolution = output_resolution or os.environ.get('PANORAMA_RESOLUTION', '6K')
+        self.stitcher = HuginPanoramaStitcher(output_resolution=resolution)
+        logger.info(f"Hugin-based stitcher initialized with {resolution} resolution.")
 
     def process_session(self, job_id: str, session_data: dict, image_files: List[str]):
         """Process a complete panorama session using the Hugin engine."""
@@ -291,6 +293,15 @@ def process_panorama():
     logger.info(f"Processing job {job_id}")
     session_metadata = json.loads(request.form['session_metadata'])
     
+    # Check for custom resolution request
+    resolution = request.form.get('resolution', '6K')
+    if resolution not in ['4K', '6K', '8K']:
+        logger.warning(f"Invalid resolution '{resolution}' requested, using 6K")
+        resolution = '6K'
+    
+    # Create processor with requested resolution for this job
+    job_processor = PanoramaProcessor(output_resolution=resolution)
+    
     with job_lock:
         jobs[job_id] = {
             "jobId": job_id, "state": JobState.QUEUED, "progress": 0.0,
@@ -322,7 +333,7 @@ def process_panorama():
         logger.error("No images found in bundle - extraction failed")
         return jsonify({"error": "No images found in bundle"}), 400
     
-    thread = threading.Thread(target=processor.process_session, args=(job_id, session_metadata, image_files))
+    thread = threading.Thread(target=job_processor.process_session, args=(job_id, session_metadata, image_files))
     thread.daemon = True
     thread.start()
     

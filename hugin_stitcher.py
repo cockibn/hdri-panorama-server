@@ -31,14 +31,27 @@ logger = logging.getLogger(__name__)
 class HuginPanoramaStitcher:
     """Professional panorama stitcher using Hugin command-line tools."""
     
-    def __init__(self, hugin_path: str = None):
+    def __init__(self, hugin_path: str = None, output_resolution: str = "6K"):
         self.hugin_path = hugin_path or self._find_hugin_path()
         self.temp_dir = None
         self._verify_hugin_installation()
         
-        # Reduced canvas size for better quality/performance balance
-        self.canvas_size = (6144, 3072)  # 6K instead of 8K
+        # Configurable canvas size for different quality/performance needs
+        resolution_options = {
+            "4K": (4096, 2048),
+            "6K": (6144, 3072),  # Default - best balance
+            "8K": (8192, 4096),  # Maximum quality
+        }
+        
+        if output_resolution not in resolution_options:
+            logger.warning(f"Unknown resolution '{output_resolution}', defaulting to 6K")
+            output_resolution = "6K"
+            
+        self.canvas_size = resolution_options[output_resolution]
+        self.output_resolution = output_resolution
         self.jpeg_quality = 95  # High quality but reasonable for intermediate files
+        
+        logger.info(f"🎨 Using {output_resolution} output resolution: {self.canvas_size[0]}×{self.canvas_size[1]}")
         
         # **DEVICE-SPECIFIC DISTORTION PROFILES**: Research-based calibration data
         self.device_distortion_profiles = {
@@ -134,7 +147,7 @@ class HuginPanoramaStitcher:
         raise RuntimeError("Hugin not found. Please install Hugin and ensure its 'bin' directory is in the system's PATH.")
     
     def _verify_hugin_installation(self):
-        tools = ["pto_gen", "cpfind", "cpclean", "autooptimiser", "pano_modify", "nona", "enblend", "enfuse"]
+        tools = ["pto_gen", "cpfind", "cpclean", "linefind", "autooptimiser", "pano_modify", "nona", "enblend", "enfuse"]
         for tool in tools:
             if not shutil.which(os.path.join(self.hugin_path, tool)):
                 raise RuntimeError(f"Missing Hugin tool: {tool}. Please check your installation.")
@@ -182,6 +195,10 @@ class HuginPanoramaStitcher:
             if progress_callback:
                 progress_callback(0.4, "Cleaning and filtering control points...")
             project_file = self._clean_control_points(project_file)
+            
+            if progress_callback:
+                progress_callback(0.45, "Detecting vertical lines for horizon leveling...")
+            project_file = self._find_vertical_lines(project_file)
             
             if progress_callback:
                 progress_callback(0.5, "Optimizing panorama geometry...")
@@ -351,6 +368,46 @@ class HuginPanoramaStitcher:
         with open(project_file, 'w') as f:
             f.writelines(modified_lines)
         logger.info("Applied camera positions and iPhone lens parameters to PTO file.")
+        
+        # Link all lens parameters to ensure consistency across all 16 images
+        self._link_lens_parameters(project_file)
+    
+    def _link_lens_parameters(self, project_file: str):
+        """Link all lens parameters to ensure all images use the same lens model."""
+        logger.info("Linking lens parameters across all images for consistency...")
+        
+        with open(project_file, 'r') as f:
+            lines = f.readlines()
+        
+        modified_lines = []
+        image_count = 0
+        
+        # First pass: count images and modify lens references
+        for line in lines:
+            if line.startswith('i '):
+                # Set all images to use lens 0 (first lens)
+                parts = line.strip().split()
+                new_parts = []
+                
+                for part in parts:
+                    if part.startswith('n'):  # lens number parameter
+                        new_parts.append('n0')  # Force all to use lens 0
+                    else:
+                        new_parts.append(part)
+                
+                # If no lens number was specified, add it
+                if not any(part.startswith('n') for part in parts):
+                    new_parts.append('n0')
+                
+                line = ' '.join(new_parts) + '\n'
+                image_count += 1
+            
+            modified_lines.append(line)
+        
+        with open(project_file, 'w') as f:
+            f.writelines(modified_lines)
+        
+        logger.info(f"Linked {image_count} images to use the same lens parameters (lens 0).")
     
     def _extract_camera_parameters_from_exif(self, exif_data: Dict) -> Dict:
         """Extract actual camera parameters from EXIF data with validation and device-specific profiles."""
@@ -861,10 +918,10 @@ class HuginPanoramaStitcher:
     def _find_control_points(self, project_file: str) -> str:
         logger.info("Starting control point detection...")
         output_file = os.path.join(self.temp_dir, "project_cp.pto")
-        # Optimized control point detection for iPhone 360° panoramas (memory-conscious)
+        # Optimized control point detection for iPhone 360° panoramas with prealignment
         command = [
             "cpfind", 
-            "--multirow",           # Handle multiple image rows
+            "--prealigned",         # Use prealignment since we have accurate pose data
             "--celeste",            # Remove sky features for better matching  
             "--sieve1width", "12",  # Moderate increase from default 10
             "--sieve1height", "12", # Moderate increase from default 10
@@ -887,7 +944,7 @@ class HuginPanoramaStitcher:
             logger.info("Falling back to conservative cpfind settings...")
             
             # Fallback to basic settings if enhanced version fails (memory constraints)
-            fallback_command = ["cpfind", "--multirow", "--celeste", "-o", output_file, project_file]
+            fallback_command = ["cpfind", "--prealigned", "--celeste", "-o", output_file, project_file]
             try:
                 self._run_hugin_command(fallback_command, timeout=180)
                 with open(output_file, 'r') as f:
@@ -909,11 +966,24 @@ class HuginPanoramaStitcher:
             logger.warning(f"cpclean failed: {e}. Proceeding with uncleaned points.")
             return project_file
 
+    def _find_vertical_lines(self, project_file: str) -> str:
+        """Add vertical control points to help with horizon leveling."""
+        logger.info("Detecting vertical lines for horizon leveling...")
+        output_file = os.path.join(self.temp_dir, "project_vertical.pto")
+        command = ["linefind", "-o", output_file, project_file]
+        try:
+            self._run_hugin_command(command, timeout=120)
+            logger.info("Added vertical control points for improved horizon leveling.")
+            return output_file
+        except RuntimeError as e:
+            logger.warning(f"linefind failed: {e}. Proceeding without vertical control points.")
+            return project_file
+
     def _optimize_panorama(self, project_file: str) -> str:
         logger.info("Optimizing panorama geometry and photometry...")
         output_file = os.path.join(self.temp_dir, "project_opt.pto")
-        # **IMPROVED**: Use more comprehensive optimization flags.
-        command = ["autooptimiser", "-a", "-m", "-s", "-o", output_file, project_file]
+        # **IMPROVED**: Use comprehensive optimization with leveling for straight horizon.
+        command = ["autooptimiser", "-a", "-m", "-l", "-s", "-o", output_file, project_file]
         try:
             self._run_hugin_command(command, timeout=300)
             return output_file
@@ -971,10 +1041,11 @@ class HuginPanoramaStitcher:
         
         output_file = os.path.join(self.temp_dir, "final_panorama.tif")
         try:
-            # Better blending parameters for 360° panoramas
+            # Conservative blending parameters for 360° panoramas (best quality)
             self._run_hugin_command([
                 "enblend", "--compression=LZW", "--wrap=horizontal",
-                "--no-optimize", "-o", output_file
+                "--no-optimize", "--levels=29", "--blend-colorspace=IDENTITY", 
+                "-o", output_file
             ] + existing_tiff_files, timeout=600)
         except RuntimeError as enblend_error:
             if progress_callback:
@@ -982,17 +1053,17 @@ class HuginPanoramaStitcher:
             logger.warning(f"enblend failed with error: {enblend_error}")
             logger.info("Common enblend failure causes: memory issues, overlapping regions, or geometric problems")
             
-            # Try with more conservative enblend settings first
+            # Try with even more aggressive memory conservation
             try:
-                logger.info("Trying enblend with more conservative settings...")
+                logger.info("Trying enblend with maximum memory conservation...")
                 self._run_hugin_command([
                     "enblend", "--compression=LZW", "--wrap=horizontal",
-                    "--no-optimize", "--levels=29", "--blend-colorspace=identity",
-                    "-o", output_file
+                    "--no-optimize", "--levels=29", "--blend-colorspace=IDENTITY",
+                    "--fine-mask", "-o", output_file
                 ] + existing_tiff_files, timeout=600)
-                logger.info("enblend succeeded with conservative settings")
+                logger.info("enblend succeeded with memory conservation settings")
             except RuntimeError as conservative_error:
-                logger.warning(f"Conservative enblend also failed: {conservative_error}")
+                logger.warning(f"Memory-conservative enblend also failed: {conservative_error}")
                 logger.info("Falling back to enfuse for blending")
                 self._run_hugin_command([
                     "enfuse", "--compression=LZW", "--wrap=horizontal", 
