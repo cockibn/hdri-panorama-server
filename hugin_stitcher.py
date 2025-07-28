@@ -371,13 +371,52 @@ class HuginPanoramaStitcher:
             actual_focal_length = None
             logger.warning("⚠️ No EXIF focal length found, using device detection")
         
-        # Extract camera make/model for device-specific profiles
-        camera_make = exif_0th.get(271, "").decode() if isinstance(exif_0th.get(271), bytes) else exif_0th.get(271, "")
-        camera_model = exif_0th.get(272, "").decode() if isinstance(exif_0th.get(272), bytes) else exif_0th.get(272, "")
+        # Extract camera make/model for device-specific profiles with debugging
+        logger.info(f"🔍 EXIF 0th keys available: {list(exif_0th.keys())}")  # Use INFO to see in logs
+        
+        camera_make = ""
+        camera_model = ""
+        
+        # Try multiple EXIF tags for make/model (different cameras use different tags)
+        make_tags = [271, 'Make']  # Standard Make tag
+        model_tags = [272, 'Model']  # Standard Model tag
+        
+        for tag in make_tags:
+            if tag in exif_0th:
+                value = exif_0th[tag]
+                if isinstance(value, bytes):
+                    camera_make = value.decode().strip()
+                elif isinstance(value, str):
+                    camera_make = value.strip()
+                if camera_make:
+                    break
+        
+        for tag in model_tags:
+            if tag in exif_0th:
+                value = exif_0th[tag]
+                if isinstance(value, bytes):
+                    camera_model = value.decode().strip()
+                elif isinstance(value, str):
+                    camera_model = value.strip()
+                if camera_model:
+                    break
         
         # Extract image dimensions for sensor size calculation
         image_width = exif_0th.get(256, 4032)  # Default iPhone 15 Pro width
         image_height = exif_0th.get(257, 3024)  # Default iPhone 15 Pro height
+        
+        # Fallback detection if EXIF make/model is empty
+        if not camera_make and not camera_model:
+            logger.warning("⚠️ EXIF make/model empty, attempting image-based detection")
+            # iPhone images typically have specific dimensions
+            if image_width == 4032 and image_height == 3024:
+                camera_make = "Apple"
+                camera_model = "iPhone 15 Pro"  # Most likely for ultra-wide 4032x3024
+                logger.info(f"🔍 Detected iPhone from image dimensions: {image_width}x{image_height}")
+            elif image_width == 3024 and image_height == 4032:
+                camera_make = "Apple" 
+                camera_model = "iPhone 15 Pro"
+                logger.info(f"🔍 Detected iPhone from image dimensions: {image_width}x{image_height}")
         
         logger.info(f"📱 Camera detected: {camera_make} {camera_model} ({image_width}x{image_height})")
         
