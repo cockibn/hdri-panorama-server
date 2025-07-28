@@ -115,10 +115,23 @@ class PanoramaProcessor:
             preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
             
             # Save as EXR for HDR panorama with full dynamic range (as requested)
-            cv2.imwrite(str(output_path), panorama, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+            # Ensure panorama is in float32 format for EXR encoding
+            if panorama.dtype != np.float32:
+                if panorama.dtype == np.uint8:
+                    panorama = panorama.astype(np.float32) / 255.0  # Normalize to 0-1 range
+                elif panorama.dtype == np.uint16:
+                    panorama = panorama.astype(np.float32) / 65535.0  # Normalize to 0-1 range
+                else:
+                    panorama = panorama.astype(np.float32)
             
-            # Also create JPEG preview for web viewing
-            result_rgb = cv2.cvtColor(panorama, cv2.COLOR_BGR2RGB)
+            logger.info(f"📊 Panorama data type: {panorama.dtype}, shape: {panorama.shape}, range: {panorama.min():.3f}-{panorama.max():.3f}")
+            cv2.imwrite(str(output_path), panorama, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+            logger.info(f"📁 EXR file saved successfully: {output_path.stat().st_size / (1024*1024):.1f}MB")
+            
+            # Also create JPEG preview for web viewing (tone-mapped from HDR)
+            # Convert float32 HDR data to uint8 for JPEG preview
+            panorama_preview = (np.clip(panorama, 0, 1) * 255).astype(np.uint8)
+            result_rgb = cv2.cvtColor(panorama_preview, cv2.COLOR_BGR2RGB)
             Image.fromarray(result_rgb).save(str(preview_path), 'JPEG', quality=85, optimize=True)
             
             base_url = os.environ.get('BASE_URL', 'https://hdri-panorama-server-production.up.railway.app').rstrip('/')
