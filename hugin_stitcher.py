@@ -861,19 +861,19 @@ class HuginPanoramaStitcher:
     def _find_control_points(self, project_file: str) -> str:
         logger.info("Starting control point detection...")
         output_file = os.path.join(self.temp_dir, "project_cp.pto")
-        # Enhanced control point detection for 360° iPhone panoramas
+        # Optimized control point detection for iPhone 360° panoramas (memory-conscious)
         command = [
             "cpfind", 
             "--multirow",           # Handle multiple image rows
-            "--celeste",            # Remove sky features for better matching
-            "--sieve1width", "15",  # Increase keypoint detection grid (default: 10)
-            "--sieve1height", "15", # Increase keypoint detection grid (default: 10) 
-            "--sieve1size", "200",  # More keypoints per grid cell (default: 100)
-            "--sieve2width", "8",   # More control points per pair (default: 5)
-            "--sieve2height", "8",  # More control points per pair (default: 5)
+            "--celeste",            # Remove sky features for better matching  
+            "--sieve1width", "12",  # Moderate increase from default 10
+            "--sieve1height", "12", # Moderate increase from default 10
+            "--sieve1size", "150",  # Balanced keypoints per cell (default: 100)
+            "--sieve2width", "7",   # More control points per pair (default: 5)
+            "--sieve2height", "7",  # More control points per pair (default: 5)
             "--sieve2size", "2",    # Allow more matches per grid cell (default: 1)
-            "--minmatches", "6",    # Require more matches for reliability (default: 4)
-            "--fullscale",          # Use full resolution for better matching
+            "--minmatches", "5",    # Require more matches for reliability (default: 4)
+            # Remove --fullscale to reduce memory usage
             "-o", output_file, 
             project_file
         ]
@@ -883,8 +883,20 @@ class HuginPanoramaStitcher:
                 logger.info(f"Found {f.read().count('c n')} control points.")
             return output_file
         except RuntimeError as e:
-            logger.error(f"Control point detection failed: {e}")
-            raise
+            logger.warning(f"Enhanced cpfind failed: {e}")
+            logger.info("Falling back to conservative cpfind settings...")
+            
+            # Fallback to basic settings if enhanced version fails (memory constraints)
+            fallback_command = ["cpfind", "--multirow", "--celeste", "-o", output_file, project_file]
+            try:
+                self._run_hugin_command(fallback_command, timeout=180)
+                with open(output_file, 'r') as f:
+                    control_points = f.read().count('c n')
+                    logger.info(f"Fallback cpfind found {control_points} control points.")
+                return output_file
+            except RuntimeError as fallback_error:
+                logger.error(f"Both enhanced and fallback cpfind failed: {fallback_error}")
+                raise
 
     def _clean_control_points(self, project_file: str) -> str:
         logger.info("Cleaning control points...")
@@ -998,9 +1010,9 @@ class HuginPanoramaStitcher:
         seam_strength = np.mean(np.abs(sobel_x))
         seam_quality = max(0.0, 1.0 - seam_strength / 50.0)
         
-        # Geometric consistency based on enhanced control point expectations for 360° panoramas
-        # With improved settings, expect 800-1200+ control points for good quality
-        geometric_consistency = min(len(control_points) / 800.0, 1.0)
+        # Geometric consistency based on balanced control point expectations for 360° panoramas
+        # With optimized settings, expect 300-600 control points for good quality
+        geometric_consistency = min(len(control_points) / 400.0, 1.0)
         
         overall_score = np.average([seam_quality, geometric_consistency], weights=[0.6, 0.4])
         
