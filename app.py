@@ -106,25 +106,30 @@ class PanoramaProcessor:
             # Pass original EXIF data to the stitcher for iPhone optimization
             panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points, progress_callback, original_exif_data)
             
-            self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Stitching complete. Saving panorama...")
+            self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Stitching complete. Saving HDR panorama...")
             
-            output_path = OUTPUT_DIR / f"{job_id}_panorama.jpg"
-            # Use Pillow for high-quality JPEG saving
+            output_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
+            preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
+            
+            # Save as EXR for HDR panorama with full dynamic range
+            cv2.imwrite(str(output_path), panorama, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+            
+            # Also create JPEG preview for web viewing
             result_rgb = cv2.cvtColor(panorama, cv2.COLOR_BGR2RGB)
-            Image.fromarray(result_rgb).save(str(output_path), 'JPEG', quality=95, optimize=True)
+            Image.fromarray(result_rgb).save(str(preview_path), 'JPEG', quality=85, optimize=True)
             
             base_url = os.environ.get('BASE_URL', 'https://hdri-panorama-server-production.up.railway.app').rstrip('/')
             result_url = f"{base_url}/v1/panorama/result/{job_id}"
             preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
             
-            logger.info(f"🎉 iPhone-optimized panorama processing completed successfully!")
-            logger.info(f"📥 Download: {result_url}")
-            logger.info(f"👁️  Preview: {preview_url}")
+            logger.info(f"🎉 iPhone-optimized HDR panorama processing completed successfully!")
+            logger.info(f"📥 Download EXR: {result_url}")
+            logger.info(f"👁️  Preview JPEG: {preview_url}")
             logger.info(f"📊 Quality Score: {quality_metrics['overallScore']:.3f}")
             logger.info(f"📐 Resolution: {quality_metrics['resolution']}")
             logger.info(f"📱 Processor: {quality_metrics.get('processor', 'Hugin (iPhone Optimized)')}")
             
-            self._update_job_status(job_id, JobState.COMPLETED, 1.0, "iPhone-optimized panorama ready!", 
+            self._update_job_status(job_id, JobState.COMPLETED, 1.0, "iPhone-optimized HDR panorama ready!", 
                                   result_url=result_url,
                                   quality_metrics=quality_metrics)
             
@@ -324,11 +329,11 @@ def download_result(job_id: str):
     if not job or job.get("state") != JobState.COMPLETED:
         abort(404)
     
-    result_path = OUTPUT_DIR / f"{job_id}_panorama.jpg"
+    result_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
     if not result_path.exists():
         abort(404)
     
-    return send_file(str(result_path), as_attachment=True, download_name=f"panorama_{job_id}.jpg")
+    return send_file(str(result_path), as_attachment=True, download_name=f"panorama_{job_id}.exr")
 
 @app.route('/v1/panorama/preview/<job_id>', methods=['GET'])
 def preview_result(job_id: str):
@@ -338,12 +343,12 @@ def preview_result(job_id: str):
     if not job or job.get("state") != JobState.COMPLETED:
         abort(404)
     
-    result_path = OUTPUT_DIR / f"{job_id}_panorama.jpg"
-    if not result_path.exists():
+    preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
+    if not preview_path.exists():
         abort(404)
     
-    logger.info(f"📸 Serving preview for job {job_id} - file size: {result_path.stat().st_size} bytes")
-    return send_file(str(result_path), mimetype='image/jpeg')
+    logger.info(f"📸 Serving preview for job {job_id} - file size: {preview_path.stat().st_size} bytes")
+    return send_file(str(preview_path), mimetype='image/jpeg')
 
 @app.route('/health', methods=['GET'])
 def health_check():
