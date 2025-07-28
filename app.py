@@ -13,6 +13,9 @@ import json
 import time
 import threading
 from datetime import datetime, timezone
+
+# Enable OpenCV EXR codec for HDR output
+os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
@@ -108,13 +111,11 @@ class PanoramaProcessor:
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Stitching complete. Saving HDR panorama...")
             
-            output_path = OUTPUT_DIR / f"{job_id}_panorama.tiff"  # Use high-quality TIFF instead
+            output_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
             preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
             
-            # Save as 16-bit TIFF for HDR panorama (EXR alternative with full dynamic range)
-            # Convert to 16-bit for maximum quality preservation
-            panorama_16bit = (panorama * 65535).astype(np.uint16) if panorama.dtype == np.float32 else panorama
-            cv2.imwrite(str(output_path), panorama_16bit, [cv2.IMWRITE_TIFF_COMPRESSION, 1])  # LZW compression
+            # Save as EXR for HDR panorama with full dynamic range (as requested)
+            cv2.imwrite(str(output_path), panorama, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
             
             # Also create JPEG preview for web viewing
             result_rgb = cv2.cvtColor(panorama, cv2.COLOR_BGR2RGB)
@@ -125,7 +126,7 @@ class PanoramaProcessor:
             preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
             
             logger.info(f"🎉 iPhone-optimized HDR panorama processing completed successfully!")
-            logger.info(f"📥 Download TIFF: {result_url}")
+            logger.info(f"📥 Download EXR: {result_url}")
             logger.info(f"👁️  Preview JPEG: {preview_url}")
             logger.info(f"📊 Quality Score: {quality_metrics['overallScore']:.3f}")
             logger.info(f"📐 Resolution: {quality_metrics['resolution']}")
@@ -331,11 +332,11 @@ def download_result(job_id: str):
     if not job or job.get("state") != JobState.COMPLETED:
         abort(404)
     
-    result_path = OUTPUT_DIR / f"{job_id}_panorama.tiff"
+    result_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
     if not result_path.exists():
         abort(404)
     
-    return send_file(str(result_path), as_attachment=True, download_name=f"panorama_{job_id}.tiff")
+    return send_file(str(result_path), as_attachment=True, download_name=f"panorama_{job_id}.exr")
 
 @app.route('/v1/panorama/preview/<job_id>', methods=['GET'])
 def preview_result(job_id: str):
