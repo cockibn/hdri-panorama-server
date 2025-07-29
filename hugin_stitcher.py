@@ -1007,61 +1007,48 @@ class HuginPanoramaStitcher:
         with open(project_file, 'r') as f:
             lines = f.readlines()
         
+        # First, let's understand the current PTO format by logging a sample
+        logger.info("Analyzing PTO file structure...")
+        for i, line in enumerate(lines[:5]):  # Show first 5 lines for debugging
+            if line.startswith('i '):
+                logger.info(f"PTO line {i}: {line.strip()}")
+        
         modified_lines = []
         image_files_found = []
+        image_line_count = 0
+        
+        # List all files in temp directory for reference
+        temp_files = os.listdir(self.temp_dir)
+        image_files_in_temp = [f for f in temp_files if f.startswith('image_') and f.endswith('.jpg')]
+        logger.info(f"Available image files in temp dir: {sorted(image_files_in_temp)}")
         
         for line in lines:
             if line.startswith('i '):
-                # Extract filename from the 'i' line using proper PTO format parsing
-                parts = line.strip().split()
-                filename = None
+                image_line_count += 1
+                # The issue is that pto_gen creates PTO files WITHOUT filenames in the i lines
+                # We need to ADD the filename to each i line
                 
-                # In PTO format, the filename is the last token that looks like a file path
-                # It should contain a file extension or be a path
-                for part in reversed(parts):
-                    part_clean = part.strip('"')
-                    # Skip parameter prefixes and values that look like parameters
-                    if (not part.startswith(('i', 'w', 'h', 'f', 'v', 'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Eev', 'Er', 'Eb', 'r', 'p', 'y', 'TrX', 'TrY', 'TrZ', 'Tpy', 'Tpp', 'j', 'a', 'b', 'c', 'd', 'e', 'g', 't', 'Va', 'Vb', 'Vc', 'Vd', 'Vx', 'Vy', 'S', 'n')) and
-                        # Must look like a file (contains extension or slash) and be reasonable length
-                        ('.' in part_clean or '/' in part_clean or '\\' in part_clean) and
-                        len(part_clean) > 3 and 
-                        # Avoid parameter values that might contain dots (like "1.5")
-                        not part_clean.replace('.', '').replace('-', '').isdigit()):
-                        filename = part_clean
-                        break
-                
-                # Fallback: if no obvious filename found, look for image_*.jpg pattern
-                if not filename:
-                    for part in reversed(parts):
-                        part_clean = part.strip('"')
-                        if part_clean.startswith('image_') and part_clean.endswith('.jpg'):
-                            filename = part_clean
-                            break
-                
-                if filename:
-                    # Check if file exists as absolute path
-                    if os.path.exists(filename):
-                        image_files_found.append(filename)
-                        logger.debug(f"Found existing image file: {filename}")
+                # Match this image line to the corresponding temp file
+                if image_line_count <= len(image_files_in_temp):
+                    # Use 0-based indexing to match image files
+                    expected_filename = f"image_{image_line_count-1:04d}.jpg"
+                    temp_path = os.path.join(self.temp_dir, expected_filename)
+                    
+                    if os.path.exists(temp_path):
+                        # Add the filename to the end of the i line if it's not already there
+                        line_stripped = line.strip()
+                        if not (expected_filename in line_stripped or temp_path in line_stripped):
+                            # Add the filename to the end of the line
+                            line = line_stripped + f' "{temp_path}"\n'
+                            logger.info(f"Added filename to PTO line {image_line_count}: {expected_filename}")
+                        
+                        image_files_found.append(temp_path)
                     else:
-                        # Try to find file in temp directory
-                        basename = os.path.basename(filename)
-                        temp_path = os.path.join(self.temp_dir, basename)
-                        if os.path.exists(temp_path):
-                            # Fix the path in the line
-                            line = line.replace(filename, temp_path)
-                            image_files_found.append(temp_path)
-                            logger.info(f"Fixed image path: {basename} -> {temp_path}")
-                        else:
-                            logger.error(f"Image file not found: {filename} or {temp_path}")
-                            logger.error(f"PTO line was: {line.strip()}")
-                            logger.error(f"Parsed filename: '{filename}', basename: '{basename}'")
-                            logger.error(f"Temp directory contents: {os.listdir(self.temp_dir)}")
-                            raise RuntimeError(f"Missing image file: {basename}")
+                        logger.error(f"Expected image file not found: {temp_path}")
+                        raise RuntimeError(f"Missing expected image file: {expected_filename}")
                 else:
-                    logger.warning(f"Could not extract filename from PTO line: {line.strip()}")
-                    # Try to continue without this image rather than failing completely
-                    continue
+                    logger.error(f"More image lines than available files: line {image_line_count} vs {len(image_files_in_temp)} files")
+                    raise RuntimeError(f"PTO file has more image lines than available image files")
             
             modified_lines.append(line)
         
