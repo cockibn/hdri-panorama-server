@@ -1091,17 +1091,20 @@ class HuginPanoramaStitcher:
         with open(project_file, 'r') as f:
             content = f.read()
         
-        # Look for any references to single digits that might be interpreted as files
+        # Look for control point lines that might cause file reference issues
         suspicious_patterns = []
         for line_num, line in enumerate(content.split('\n')):
-            # Check for standalone numbers that might be file references
-            if any(f' {i} ' in line or f' {i}\n' in line or line.endswith(f' {i}') for i in range(20)):
+            # Only flag actual control point lines (c n...) or other non-metadata lines
+            if (line.startswith('c n') and 
+                any(f' {i} ' in line or f' {i}\n' in line or line.endswith(f' {i}') for i in range(20))):
                 suspicious_patterns.append(f"Line {line_num}: {line}")
         
         if suspicious_patterns:
-            logger.warning(f"Found {len(suspicious_patterns)} potentially problematic lines:")
+            logger.warning(f"Found {len(suspicious_patterns)} potentially problematic control point lines:")
             for pattern in suspicious_patterns[:3]:  # Show first 3
                 logger.warning(f"  {pattern}")
+        else:
+            logger.info("No problematic control point references found in PTO file")
         
         # Double-check all image files exist
         for img_path in image_files_found:
@@ -1281,52 +1284,27 @@ class HuginPanoramaStitcher:
             with open(input_file, 'r') as f:
                 lines = f.readlines()
             
-            # Add synthetic control points between adjacent images
-            # Based on the known capture pattern (16 points in roughly 8 azimuth × 2-3 elevation grid)
+            # CRITICAL FIX: Do NOT add synthetic control points that reference image indices
+            # The issue is that control points with image indices (0, 1, 2) cause Hugin tools
+            # to look for files named "0", "1", "2" instead of the actual image files
+            
+            logger.warning("Skipping synthetic control points to avoid index-based file references")
+            logger.info("Will rely on initial positioning without control points")
+            
+            # Simply copy the input file without adding problematic control points
             synthetic_lines = []
-            image_count = 0
-            
-            # Count images first
-            for line in lines:
-                if line.startswith('i '):
-                    image_count += 1
-            
-            # Copy original lines
             for line in lines:
                 synthetic_lines.append(line)
             
-            # Add minimal control points between adjacent images in the capture pattern
-            control_points_added = 0
-            if image_count >= 4:  # Need at least 4 images
-                # Create control points between images that should overlap
-                # Assume roughly 45° spacing in azimuth with some elevation variation
-                for i in range(min(8, image_count - 1)):  # Horizontal connections
-                    next_i = (i + 1) % min(8, image_count)
-                    if next_i < image_count:
-                        # Add a synthetic control point between these images
-                        # Format: c n<img1> N<img2> x<x1> y<y1> X<x2> Y<y2> t<type>
-                        cp_line = f"c n{i} N{next_i} x2016 y1512 X2016 Y1512 t0\n"
-                        synthetic_lines.append(cp_line)
-                        control_points_added += 1
-                
-                # Add some vertical connections if we have enough images
-                if image_count >= 12:
-                    for i in range(8):
-                        upper_i = i + 8
-                        if upper_i < image_count:
-                            cp_line = f"c n{i} N{upper_i} x2016 y1512 X2016 Y1512 t0\n"
-                            synthetic_lines.append(cp_line)
-                            control_points_added += 1
-            
-            # Write the modified project file
+            # Write the unmodified project file (no synthetic control points)
             with open(output_file, 'w') as f:
                 f.writelines(synthetic_lines)
             
-            logger.info(f"Added {control_points_added} synthetic control points")
+            logger.info("Created fallback project file without synthetic control points")
             return output_file
             
         except Exception as e:
-            logger.error(f"Failed to create synthetic control points: {e}")
+            logger.error(f"Failed to create fallback project file: {e}")
             raise
     
     def _set_output_parameters(self, project_file: str) -> str:
