@@ -334,13 +334,21 @@ class HuginPanoramaStitcher:
                     original_exif_data[image_idx] if original_exif_data and image_idx < len(original_exif_data) else None
                 )
                 
-                # Parse existing line and remove old parameters
+                # Parse existing line and preserve non-parameter parts (including filename)
                 parts = line.strip().split()
                 new_parts = []
+                image_filename = None
                 
                 for part in parts:
                     # Remove existing position and lens parameters to replace with optimized ones
-                    if not (part.startswith(('y', 'p', 'r', 'v', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 't'))):
+                    if part.startswith(('y', 'p', 'r', 'v', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 't')):
+                        # Skip - we'll add updated parameters
+                        continue
+                    elif ('.' in part and ('/' in part or '\\' in part)) or part.startswith('image_'):
+                        # This looks like a filename - preserve it
+                        image_filename = part
+                    else:
+                        # Keep other parameters (i, w, h, n, etc.)
                         new_parts.append(part)
                 
                 # Add camera position parameters
@@ -358,6 +366,10 @@ class HuginPanoramaStitcher:
                     f'g{camera_params["shear_g"]:.6f}',      # Shear factor
                     f't{camera_params["tilt_t"]:.6f}',       # Tilt factor
                 ])
+                
+                # Add the image filename back at the end
+                if image_filename:
+                    new_parts.append(image_filename)
                 
                 line = ' '.join(new_parts) + '\n'
                 image_idx += 1
