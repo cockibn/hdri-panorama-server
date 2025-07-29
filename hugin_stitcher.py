@@ -1076,6 +1076,33 @@ class HuginPanoramaStitcher:
         
         logger.info(f"Project file validation complete: {len(image_files_found)} images verified")
         
+        # Debug: Log the actual content of some PTO lines to see what we have
+        logger.info("Final PTO file sample (first 5 'i' lines):")
+        with open(project_file, 'r') as f:
+            lines = f.readlines()
+        i_line_count = 0
+        for line in lines:
+            if line.startswith('i ') and i_line_count < 5:
+                logger.info(f"PTO i-line {i_line_count}: {line.strip()}")
+                i_line_count += 1
+        
+        # Check for any suspicious file references in the entire PTO file
+        logger.info("Checking for problematic file references in PTO file...")
+        with open(project_file, 'r') as f:
+            content = f.read()
+        
+        # Look for any references to single digits that might be interpreted as files
+        suspicious_patterns = []
+        for line_num, line in enumerate(content.split('\n')):
+            # Check for standalone numbers that might be file references
+            if any(f' {i} ' in line or f' {i}\n' in line or line.endswith(f' {i}') for i in range(20)):
+                suspicious_patterns.append(f"Line {line_num}: {line}")
+        
+        if suspicious_patterns:
+            logger.warning(f"Found {len(suspicious_patterns)} potentially problematic lines:")
+            for pattern in suspicious_patterns[:3]:  # Show first 3
+                logger.warning(f"  {pattern}")
+        
         # Double-check all image files exist
         for img_path in image_files_found:
             if not os.path.exists(img_path):
