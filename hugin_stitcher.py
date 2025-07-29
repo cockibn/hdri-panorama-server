@@ -943,10 +943,14 @@ class HuginPanoramaStitcher:
         # Validate project file and fix image paths if needed
         self._validate_and_fix_project_file(project_file)
         
-        # CRITICAL FIX: Try minimal cpfind first to avoid silent failures
+        # REVISED APPROACH: Force cpfind to work with very specific iPhone-optimized settings
         command = [
             "cpfind", 
-            "--minmatches", "2",    # Very low requirement to get any matches
+            "--prealigned",         # We have accurate ARKit positioning
+            "--sift",               # Force SIFT feature detection 
+            "--kdtree",             # Use KD-tree for faster matching
+            "--ransac",             # Use RANSAC for outlier removal
+            "--minmatches", "8",    # Enough matches for good panorama
             "-o", output_file, 
             project_file
         ]
@@ -1059,8 +1063,8 @@ class HuginPanoramaStitcher:
                         # Add the filename to the end of the i line if it's not already there
                         line_stripped = line.strip()
                         if not (expected_filename in line_stripped or temp_path in line_stripped):
-                            # Add the filename to the end of the line
-                            line = line_stripped + f' "{temp_path}"\n'
+                            # Add the filename to the end of the line (no quotes to avoid parsing issues)
+                            line = line_stripped + f' {temp_path}\n'
                             logger.info(f"Added filename to PTO line {image_line_count}: {expected_filename}")
                         
                         image_files_found.append(temp_path)
@@ -1176,26 +1180,46 @@ class HuginPanoramaStitcher:
 
     def _find_vertical_lines(self, project_file: str) -> str:
         """Add vertical control points to help with horizon leveling."""
-        # CRITICAL FIX: Skip linefind entirely due to vigra::PreconditionViolation crashes
-        logger.warning("Skipping linefind due to known vigra library crashes with iPhone images")
-        logger.info("Using ARKit positioning data for horizon alignment instead of vertical line detection")
-        
+        logger.info("Attempting vertical line detection with error recovery...")
         output_file = os.path.join(self.temp_dir, "project_vertical.pto")
         
-        # Simply copy the input file without attempting linefind
+        # Validate input file exists and has images
+        if not os.path.exists(project_file):
+            logger.warning("Input project file missing for linefind, skipping vertical line detection")
+            return project_file
+        
+        # Try linefind with improved error handling
+        try:
+            # Set environment to avoid display issues and ensure proper locale
+            env = os.environ.copy()
+            env['DISPLAY'] = ''
+            env['LC_ALL'] = 'C'  # Use C locale to avoid encoding issues
+            
+            command = ["linefind", "-o", output_file, project_file]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=60, 
+                                  encoding='utf-8', errors='replace', env=env)
+            
+            if result.returncode == 0 and os.path.exists(output_file):
+                logger.info("✅ Vertical line detection succeeded")
+                return output_file
+            else:
+                logger.warning(f"linefind failed with return code {result.returncode}")
+                logger.warning(f"linefind stderr: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("linefind timed out after 60 seconds")
+        except Exception as e:
+            logger.warning(f"linefind failed with exception: {e}")
+        
+        # Fallback: copy input file
+        logger.info("Using fallback - copying input file without vertical line detection")
         try:
             import shutil
             shutil.copy2(project_file, output_file)
-            logger.info("✅ Bypassed linefind - relying on ARKit horizon data")
             return output_file
         except Exception as e:
-            logger.warning(f"Failed to copy project file for vertical line step: {e}")
+            logger.warning(f"Failed to copy project file: {e}")
             return project_file
-        
-        # DISABLED: Original linefind code (causes vigra crashes with iPhone images)
-        # The linefind tool from Hugin has known issues with vigra::PreconditionViolation
-        # when processing iPhone camera images. Since we have accurate ARKit positioning
-        # data, we can skip vertical line detection entirely.
 
     def _optimize_panorama(self, project_file: str) -> str:
         logger.info("Optimizing panorama geometry and photometry...")
@@ -1340,8 +1364,8 @@ class HuginPanoramaStitcher:
                             part = f'n{lens_num}'
                         new_line_parts.append(part)
                     
-                    # Add the correct filename at the end
-                    new_line_parts.append(f'"{full_path}"')
+                    # Add the correct filename at the end (without quotes to avoid parsing issues)
+                    new_line_parts.append(full_path)
                     line = ' '.join(new_line_parts) + '\n'
                     
                     logger.info(f"🔧 Sanitized image line {image_line_count}: {image_filename}")
