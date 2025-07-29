@@ -988,17 +988,23 @@ class HuginPanoramaStitcher:
                 logger.error(f"Input project file size: {os.path.getsize(project_file) if os.path.exists(project_file) else 'file missing'}")
                 logger.error(f"Temp directory contents: {os.listdir(self.temp_dir)}")
                 
-                # Final fallback: copy input file as output to allow process to continue
-                # This allows the optimizer to still work with just the initial positioning
-                logger.warning("Creating fallback project file without control points")
+                # Final fallback: create a minimal project file with manual control points
+                logger.warning("Creating fallback project file with synthetic control points")
                 try:
-                    import shutil
-                    shutil.copy2(project_file, output_file)
-                    logger.info("Created fallback project file - will rely on initial positioning only")
-                    return output_file
-                except Exception as copy_error:
-                    logger.error(f"Failed to create fallback project file: {copy_error}")
-                    raise RuntimeError("Complete cpfind failure - cannot proceed with stitching")
+                    fallback_output = self._create_synthetic_control_points(project_file, output_file)
+                    logger.info("Created fallback project file with synthetic control points for initial positioning")
+                    return fallback_output
+                except Exception as synthetic_error:
+                    logger.warning(f"Synthetic control points failed: {synthetic_error}")
+                    # Ultimate fallback: copy input file
+                    try:
+                        import shutil
+                        shutil.copy2(project_file, output_file)
+                        logger.info("Created fallback project file - will rely on initial positioning only")
+                        return output_file
+                    except Exception as copy_error:
+                        logger.error(f"Failed to create fallback project file: {copy_error}")
+                        raise RuntimeError("Complete cpfind failure - cannot proceed with stitching")
     
     def _validate_and_fix_project_file(self, project_file: str):
         """Validate project file and fix any image path issues."""
@@ -1171,13 +1177,117 @@ class HuginPanoramaStitcher:
     def _optimize_panorama(self, project_file: str) -> str:
         logger.info("Optimizing panorama geometry and photometry...")
         output_file = os.path.join(self.temp_dir, "project_opt.pto")
-        # **IMPROVED**: Use comprehensive optimization with leveling for straight horizon.
-        command = ["autooptimiser", "-a", "-m", "-l", "-s", "-o", output_file, project_file]
+        
+        # Check if the project file has control points
+        has_control_points = self._check_for_control_points(project_file)
+        
+        if has_control_points:
+            logger.info("Project has control points, using full optimization...")
+            # **IMPROVED**: Use comprehensive optimization with leveling for straight horizon.
+            command = ["autooptimiser", "-a", "-m", "-l", "-s", "-o", output_file, project_file]
+            try:
+                self._run_hugin_command(command, timeout=300)
+                return output_file
+            except RuntimeError as e:
+                logger.warning(f"Full optimization failed: {e}")
+                logger.info("Falling back to position-only optimization...")
+                return self._fallback_optimization(project_file, output_file)
+        else:
+            logger.warning("No control points found, using position-only optimization...")
+            return self._fallback_optimization(project_file, output_file)
+    
+    def _check_for_control_points(self, project_file: str) -> bool:
+        """Check if the project file contains control points."""
         try:
-            self._run_hugin_command(command, timeout=300)
+            with open(project_file, 'r') as f:
+                content = f.read()
+                control_points = content.count('c n')
+                logger.info(f"Found {control_points} control points in project file")
+                return control_points > 0
+        except Exception as e:
+            logger.warning(f"Could not check control points: {e}")
+            return False
+    
+    def _fallback_optimization(self, input_file: str, output_file: str) -> str:
+        """Fallback optimization for projects without control points."""
+        logger.info("Using fallback optimization without control point refinement...")
+        
+        # For panoramas without control points, we rely on the initial positioning
+        # and only optimize lens parameters and photometric alignment
+        try:
+            # Try lens-only optimization first
+            command = ["autooptimiser", "-l", "-o", output_file, input_file]
+            self._run_hugin_command(command, timeout=180)
+            logger.info("Lens-only optimization successful")
             return output_file
         except RuntimeError as e:
-            logger.error(f"Critical optimization step failed: {e}")
+            logger.warning(f"Lens optimization failed: {e}")
+            
+            # If that fails, just copy the input file and rely on initial positioning
+            logger.info("Using initial positioning without optimization...")
+            try:
+                import shutil
+                shutil.copy2(input_file, output_file)
+                logger.info("Proceeding with initial camera positions only")
+                return output_file
+            except Exception as copy_error:
+                logger.error(f"Failed to create fallback optimization file: {copy_error}")
+                raise RuntimeError("Complete optimization failure - cannot proceed")
+    
+    def _create_synthetic_control_points(self, input_file: str, output_file: str) -> str:
+        """Create minimal synthetic control points for panoramas when cpfind fails."""
+        logger.info("Creating synthetic control points based on capture pattern...")
+        
+        try:
+            with open(input_file, 'r') as f:
+                lines = f.readlines()
+            
+            # Add synthetic control points between adjacent images
+            # Based on the known capture pattern (16 points in roughly 8 azimuth × 2-3 elevation grid)
+            synthetic_lines = []
+            image_count = 0
+            
+            # Count images first
+            for line in lines:
+                if line.startswith('i '):
+                    image_count += 1
+            
+            # Copy original lines
+            for line in lines:
+                synthetic_lines.append(line)
+            
+            # Add minimal control points between adjacent images in the capture pattern
+            control_points_added = 0
+            if image_count >= 4:  # Need at least 4 images
+                # Create control points between images that should overlap
+                # Assume roughly 45° spacing in azimuth with some elevation variation
+                for i in range(min(8, image_count - 1)):  # Horizontal connections
+                    next_i = (i + 1) % min(8, image_count)
+                    if next_i < image_count:
+                        # Add a synthetic control point between these images
+                        # Format: c n<img1> N<img2> x<x1> y<y1> X<x2> Y<y2> t<type>
+                        cp_line = f"c n{i} N{next_i} x2016 y1512 X2016 Y1512 t0\n"
+                        synthetic_lines.append(cp_line)
+                        control_points_added += 1
+                
+                # Add some vertical connections if we have enough images
+                if image_count >= 12:
+                    for i in range(8):
+                        upper_i = i + 8
+                        if upper_i < image_count:
+                            cp_line = f"c n{i} N{upper_i} x2016 y1512 X2016 Y1512 t0\n"
+                            synthetic_lines.append(cp_line)
+                            control_points_added += 1
+            
+            # Write the modified project file
+            with open(output_file, 'w') as f:
+                f.writelines(synthetic_lines)
+            
+            logger.info(f"Added {control_points_added} synthetic control points")
+            return output_file
+            
+        except Exception as e:
+            logger.error(f"Failed to create synthetic control points: {e}")
             raise
     
     def _set_output_parameters(self, project_file: str) -> str:
