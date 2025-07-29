@@ -1333,6 +1333,11 @@ class HuginPanoramaStitcher:
                         if ('/' in part or '\\' in part or part.startswith('"') or 
                             part.isdigit() or part.startswith('image_')):
                             continue
+                        # Fix problematic lens parameter with quotes
+                        if part.startswith('n"') and part.endswith('"'):
+                            # Extract number and remove quotes: n"0" -> n0
+                            lens_num = part[2:-1]  # Remove n" and "
+                            part = f'n{lens_num}'
                         new_line_parts.append(part)
                     
                     # Add the correct filename at the end
