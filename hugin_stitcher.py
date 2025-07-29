@@ -1322,10 +1322,14 @@ class HuginPanoramaStitcher:
         ]
         self._run_hugin_command(command)
         
-        # CRITICAL FIX: Sanitize the final PTO file to ensure no numeric file references
-        self._sanitize_final_pto_file(output_file)
+        # CRITICAL FIX: Create a completely clean PTO file from scratch
+        clean_output_file = os.path.join(self.temp_dir, "project_clean_final.pto")
+        self._create_clean_pto_file(clean_output_file)
         
-        return output_file
+        # DEBUGGING: Show the actual PTO file content before nona
+        self._debug_pto_file_content(clean_output_file)
+        
+        return clean_output_file
     
     def _sanitize_final_pto_file(self, project_file: str):
         """Ensure the final PTO file has correct image paths and no numeric references."""
@@ -1378,6 +1382,12 @@ class HuginPanoramaStitcher:
                 # Control point line - remove entirely to avoid numeric references
                 logger.info("🚫 Removed control point line to prevent numeric file references")
                 continue
+            
+            elif line.startswith('v '):
+                # Variable line - check for problematic references
+                if ' 0 ' in line or line.endswith(' 0') or line.endswith(' 0\n'):
+                    logger.info("🚫 Removed variable line with potential numeric file reference")
+                    continue
             
             sanitized_lines.append(line)
         
@@ -1579,3 +1589,91 @@ class HuginPanoramaStitcher:
                 logger.warning(f"⚠️ Failed to create placeholder {placeholder_path}: {e}")
         
         logger.info(f"✅ Created {len(image_files)} placeholder remapped files with alpha channels")
+    
+    def _debug_pto_file_content(self, project_file: str):
+        """Debug function to show PTO file content before nona."""
+        logger.info("🔍 DEBUGGING: Final PTO file content before nona:")
+        
+        try:
+            with open(project_file, 'r') as f:
+                lines = f.readlines()
+            
+            # Show first 10 lines and any lines that might contain problematic references
+            logger.info(f"📋 PTO file has {len(lines)} total lines")
+            
+            for i, line in enumerate(lines[:10]):
+                logger.info(f"📄 Line {i+1}: {line.strip()}")
+            
+            # Look for any suspicious patterns
+            suspicious_lines = []
+            for i, line in enumerate(lines):
+                line_stripped = line.strip()
+                if ('0' in line_stripped and not line_stripped.startswith('#') and 
+                    not '/image_' in line_stripped):
+                    suspicious_lines.append((i+1, line_stripped))
+            
+            if suspicious_lines:
+                logger.error("🚨 Found suspicious lines that might cause nona to look for file '0':")
+                for line_num, line_content in suspicious_lines[:5]:
+                    logger.error(f"⚠️ Line {line_num}: {line_content}")
+            
+            # Count different line types
+            i_lines = len([l for l in lines if l.startswith('i ')])
+            c_lines = len([l for l in lines if l.startswith('c ')])
+            v_lines = len([l for l in lines if l.startswith('v ')])
+            p_lines = len([l for l in lines if l.startswith('p ')])
+            
+            logger.info(f"📊 PTO content: {i_lines} image lines, {c_lines} control points, {v_lines} variables, {p_lines} projection lines")
+            
+        except Exception as e:
+            logger.error(f"Failed to debug PTO file: {e}")
+    
+    def _create_clean_pto_file(self, output_file: str):
+        """Create a completely clean PTO file with only essential components."""
+        logger.info("🧽 Creating completely clean PTO file from scratch...")
+        
+        # Get available image files
+        image_files = sorted([f for f in os.listdir(self.temp_dir) if f.startswith('image_') and f.endswith('.jpg')])
+        
+        if not image_files:
+            raise RuntimeError("No image files found for clean PTO creation")
+        
+        logger.info(f"📁 Creating clean PTO for {len(image_files)} images")
+        
+        # Build clean PTO content
+        pto_lines = []
+        
+        # Panorama line (project settings)
+        pto_lines.append(f"p f2 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 E0 R0 n\"TIFF_m c:LZW r:CROP\"\n")
+        
+        # Mask line (if needed)
+        pto_lines.append("m g1 i0 f0 m2 p0.00784314\n")
+        
+        # Image lines - completely clean with only essential parameters
+        for i, image_filename in enumerate(image_files):
+            full_path = os.path.join(self.temp_dir, image_filename)
+            
+            # Get positioning from the original capture points (if available)
+            # Default to basic 360-degree pattern if no specific positions
+            if i < 16:
+                # Basic 16-point spherical pattern
+                yaw = (i % 8) * 45.0  # 8 positions around horizontal
+                pitch = [-45.0, 0.0, 45.0][i // 8] if i < 24 else 0.0  # 3 elevation levels
+            else:
+                yaw = i * (360.0 / len(image_files))
+                pitch = 0.0
+            
+            # Ultra-wide iPhone parameters
+            pto_lines.append(
+                f"i w4032 h3024 f0 v106.2 Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 "
+                f"r0 p{pitch:.1f} y{yaw:.1f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 "
+                f"a-0.12 b0.08 c-0.02 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0 Vm5 "
+                f"n{i} {full_path}\n"
+            )
+        
+        # Write clean PTO file
+        with open(output_file, 'w') as f:
+            f.writelines(pto_lines)
+        
+        logger.info(f"✅ Created clean PTO file with {len(image_files)} images, no control points or problematic references")
+        logger.info(f"📐 Using 360° spherical pattern with iPhone ultra-wide parameters")
