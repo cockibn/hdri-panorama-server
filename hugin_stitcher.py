@@ -919,28 +919,24 @@ class HuginPanoramaStitcher:
         logger.info("Starting control point detection...")
         output_file = os.path.join(self.temp_dir, "project_cp.pto")
         
-        # Verify input file exists
+        # Verify input file exists and validate contents
         if not os.path.exists(project_file):
             raise RuntimeError(f"Input project file does not exist: {project_file}")
         
-        # Optimized control point detection for iPhone 360° panoramas with prealignment
+        # Validate project file and fix image paths if needed
+        self._validate_and_fix_project_file(project_file)
+        
+        # Start with basic cpfind command for better compatibility
         command = [
             "cpfind", 
             "--prealigned",         # Use prealignment since we have accurate pose data
             "--celeste",            # Remove sky features for better matching  
-            "--sieve1width", "12",  # Moderate increase from default 10
-            "--sieve1height", "12", # Moderate increase from default 10
-            "--sieve1size", "150",  # Balanced keypoints per cell (default: 100)
-            "--sieve2width", "7",   # More control points per pair (default: 5)
-            "--sieve2height", "7",  # More control points per pair (default: 5)
-            "--sieve2size", "2",    # Allow more matches per grid cell (default: 1)
-            "--minmatches", "5",    # Require more matches for reliability (default: 4)
-            # Remove --fullscale to reduce memory usage
+            "--minmatches", "4",    # Lower requirement for initial attempt (default: 4)
             "-o", output_file, 
             project_file
         ]
         try:
-            stdout, stderr = self._run_hugin_command(command, timeout=300)  # Increased timeout for enhanced detection
+            stdout, stderr = self._run_hugin_command(command, timeout=300)
             logger.debug(f"cpfind stdout: {stdout}")
             logger.debug(f"cpfind stderr: {stderr}")
             
@@ -951,10 +947,14 @@ class HuginPanoramaStitcher:
             with open(output_file, 'r') as f:
                 content = f.read()
                 control_point_count = content.count('c n')
-                logger.info(f"Found {control_point_count} control points.")
+                logger.info(f"Found {control_point_count} control points with basic settings.")
                 
                 if control_point_count == 0:
                     logger.warning("No control points found - images may not overlap sufficiently")
+                elif control_point_count >= 50:
+                    logger.info("Good control point coverage - attempting enhanced detection...")
+                    # Try enhanced settings only if basic detection worked
+                    return self._enhanced_control_point_detection(project_file, output_file)
                     
             return output_file
         except RuntimeError as e:
@@ -999,6 +999,107 @@ class HuginPanoramaStitcher:
                 except Exception as copy_error:
                     logger.error(f"Failed to create fallback project file: {copy_error}")
                     raise RuntimeError("Complete cpfind failure - cannot proceed with stitching")
+    
+    def _validate_and_fix_project_file(self, project_file: str):
+        """Validate project file and fix any image path issues."""
+        logger.info("Validating project file and image paths...")
+        
+        with open(project_file, 'r') as f:
+            lines = f.readlines()
+        
+        modified_lines = []
+        image_files_found = []
+        
+        for line in lines:
+            if line.startswith('i '):
+                # Extract filename from the 'i' line - it's typically the last part
+                parts = line.strip().split()
+                filename = None
+                
+                # The filename is usually the last parameter that doesn't start with a parameter prefix
+                for part in reversed(parts):
+                    if not part.startswith(('i', 'w', 'h', 'f', 'v', 'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Eev', 'Er', 'Eb', 'r', 'p', 'y', 'TrX', 'TrY', 'TrZ', 'Tpy', 'Tpp', 'j', 'a', 'b', 'c', 'd', 'e', 'g', 't', 'Va', 'Vb', 'Vc', 'Vd', 'Vx', 'Vy', 'S', 'n')):
+                        filename = part.strip('"')
+                        break
+                
+                if filename:
+                    # Check if file exists as absolute path
+                    if os.path.exists(filename):
+                        image_files_found.append(filename)
+                    else:
+                        # Try to find file in temp directory
+                        basename = os.path.basename(filename)
+                        temp_path = os.path.join(self.temp_dir, basename)
+                        if os.path.exists(temp_path):
+                            # Fix the path in the line
+                            line = line.replace(filename, temp_path)
+                            image_files_found.append(temp_path)
+                            logger.info(f"Fixed image path: {basename} -> {temp_path}")
+                        else:
+                            logger.error(f"Image file not found: {filename} or {temp_path}")
+                            raise RuntimeError(f"Missing image file: {basename}")
+            
+            modified_lines.append(line)
+        
+        # Write back the corrected project file
+        with open(project_file, 'w') as f:
+            f.writelines(modified_lines)
+        
+        logger.info(f"Project file validation complete: {len(image_files_found)} images verified")
+        
+        # Double-check all image files exist
+        for img_path in image_files_found:
+            if not os.path.exists(img_path):
+                logger.error(f"Image file missing after validation: {img_path}")
+                raise RuntimeError(f"Image file not accessible: {os.path.basename(img_path)}")
+    
+    def _enhanced_control_point_detection(self, project_file: str, basic_output: str) -> str:
+        """Try enhanced control point detection if basic detection succeeded."""
+        logger.info("Attempting enhanced control point detection...")
+        enhanced_output = os.path.join(self.temp_dir, "project_cp_enhanced.pto")
+        
+        # Enhanced command with more aggressive settings
+        command = [
+            "cpfind", 
+            "--prealigned",         # Use prealignment since we have accurate pose data
+            "--celeste",            # Remove sky features for better matching  
+            "--sieve1width", "12",  # Moderate increase from default 10
+            "--sieve1height", "12", # Moderate increase from default 10
+            "--sieve1size", "150",  # Balanced keypoints per cell (default: 100)
+            "--sieve2width", "7",   # More control points per pair (default: 5)
+            "--sieve2height", "7",  # More control points per pair (default: 5)
+            "--sieve2size", "2",    # Allow more matches per grid cell (default: 1)
+            "--minmatches", "5",    # Require more matches for reliability (default: 4)
+            "-o", enhanced_output, 
+            project_file
+        ]
+        
+        try:
+            stdout, stderr = self._run_hugin_command(command, timeout=300)
+            logger.debug(f"Enhanced cpfind stdout: {stdout}")
+            logger.debug(f"Enhanced cpfind stderr: {stderr}")
+            
+            if os.path.exists(enhanced_output):
+                with open(enhanced_output, 'r') as f:
+                    content = f.read()
+                    enhanced_count = content.count('c n')
+                    
+                with open(basic_output, 'r') as f:
+                    basic_count = f.read().count('c n')
+                
+                if enhanced_count > basic_count:
+                    logger.info(f"Enhanced detection successful: {enhanced_count} control points (vs {basic_count} basic)")
+                    return enhanced_output
+                else:
+                    logger.info(f"Basic detection was sufficient: {basic_count} control points")
+                    return basic_output
+            else:
+                logger.warning("Enhanced cpfind did not create output file, using basic results")
+                return basic_output
+                
+        except RuntimeError as e:
+            logger.warning(f"Enhanced cpfind failed: {e}, using basic results")
+            return basic_output
 
     def _clean_control_points(self, project_file: str) -> str:
         logger.info("Cleaning control points...")
@@ -1015,13 +1116,45 @@ class HuginPanoramaStitcher:
         """Add vertical control points to help with horizon leveling."""
         logger.info("Detecting vertical lines for horizon leveling...")
         output_file = os.path.join(self.temp_dir, "project_vertical.pto")
+        
+        # Validate input file exists and has images
+        if not os.path.exists(project_file):
+            logger.warning("Input project file missing for linefind, skipping vertical line detection")
+            return project_file
+        
+        # Check if project file has valid image references
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+                if 'i ' not in content:
+                    logger.warning("Project file has no image references, skipping vertical line detection")
+                    return project_file
+        except Exception as e:
+            logger.warning(f"Could not read project file for linefind: {e}")
+            return project_file
+        
         command = ["linefind", "-o", output_file, project_file]
         try:
-            self._run_hugin_command(command, timeout=120)
-            logger.info("Added vertical control points for improved horizon leveling.")
-            return output_file
-        except RuntimeError as e:
-            logger.warning(f"linefind failed: {e}. Proceeding without vertical control points.")
+            # Set environment variable to handle potential display issues
+            env = os.environ.copy()
+            env['DISPLAY'] = ''  # Ensure no display dependency
+            
+            result = subprocess.run(command, capture_output=True, text=True, timeout=120, 
+                                  encoding='utf-8', errors='ignore', env=env)
+            
+            if result.returncode == 0 and os.path.exists(output_file):
+                logger.info("Added vertical control points for improved horizon leveling.")
+                return output_file
+            else:
+                logger.warning(f"linefind failed with return code {result.returncode}: {result.stderr}")
+                logger.info("Proceeding without vertical control points - horizontal alignment will rely on bundle adjustment")
+                return project_file
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("linefind timed out after 120 seconds, proceeding without vertical control points")
+            return project_file
+        except Exception as e:
+            logger.warning(f"linefind failed with exception: {e}. Proceeding without vertical control points.")
             return project_file
 
     def _optimize_panorama(self, project_file: str) -> str:
