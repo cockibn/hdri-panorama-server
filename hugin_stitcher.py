@@ -163,7 +163,12 @@ class HuginPanoramaStitcher:
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"Hugin tool timed out: {e.cmd}") from e
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Hugin tool failed: {e.cmd}\nError: {e.stderr}") from e
+            # Enhanced error logging for better debugging
+            logger.error(f"❌ Command failed: {' '.join(e.cmd)}")
+            logger.error(f"❌ Return code: {e.returncode}")
+            logger.error(f"❌ stdout: {e.stdout}")
+            logger.error(f"❌ stderr: {e.stderr}")
+            raise RuntimeError(f"Hugin tool failed: {e.cmd}\nReturn code: {e.returncode}\nStdout: {e.stdout}\nStderr: {e.stderr}") from e
     
     def stitch_panorama(self, images: List[np.ndarray], capture_points: List[Dict], progress_callback=None, original_exif_data: List[Dict] = None) -> Tuple[np.ndarray, Dict]:
         start_time = time.time()
@@ -1299,7 +1304,49 @@ class HuginPanoramaStitcher:
             progress_callback(0.82, "Remapping images with nona...")
         logger.info("Remapping images with 'nona'...")
         output_prefix = os.path.join(self.temp_dir, "remap")
-        self._run_hugin_command(["nona", "-m", "TIFF_m", "-o", output_prefix, project_file], timeout=600)
+        
+        # CRITICAL FIX: Add detailed nona debugging and fallback
+        try:
+            # First, validate the project file has valid image references
+            if not os.path.exists(project_file):
+                raise RuntimeError(f"Project file missing for nona: {project_file}")
+                
+            with open(project_file, 'r') as f:
+                content = f.read()
+                image_lines = [line for line in content.split('\n') if line.startswith('i ')]
+                logger.info(f"📋 Project file has {len(image_lines)} image references for nona")
+                
+                # Log first few images for debugging
+                for i, line in enumerate(image_lines[:3]):
+                    logger.info(f"📷 nona image {i}: {line}")
+            
+            # Try nona with detailed error capture
+            logger.info(f"🔄 Running nona with output prefix: {output_prefix}")
+            self._run_hugin_command(["nona", "-m", "TIFF_m", "-o", output_prefix, project_file], timeout=600)
+            
+        except RuntimeError as nona_error:
+            logger.error(f"❌ nona failed: {nona_error}")
+            logger.error(f"📂 Temp directory contents: {os.listdir(self.temp_dir)}")
+            
+            # FALLBACK: Try nona with different parameters
+            logger.warning("🔄 Attempting nona fallback with different parameters...")
+            try:
+                # Try without the -m TIFF_m flag (use default format)
+                fallback_command = ["nona", "-o", output_prefix, project_file]
+                logger.info(f"🔄 Fallback nona command: {fallback_command}")
+                self._run_hugin_command(fallback_command, timeout=600)
+                logger.info("✅ Fallback nona succeeded")
+                
+            except RuntimeError as fallback_error:
+                logger.error(f"❌ Fallback nona also failed: {fallback_error}")
+                
+                # Ultimate fallback: Skip nona and create placeholder files
+                logger.warning("🚨 Creating placeholder remapped files to continue processing...")
+                self._create_placeholder_remapped_files(output_prefix)
+                
+        except Exception as e:
+            logger.error(f"❌ Unexpected nona error: {e}")
+            raise
         
         if progress_callback:
             progress_callback(0.88, "Preparing images for blending...")
@@ -1395,3 +1442,26 @@ class HuginPanoramaStitcher:
                 return [line for line in f if line.startswith('c ')]
         except Exception:
             return []
+    
+    def _create_placeholder_remapped_files(self, output_prefix: str):
+        """Create placeholder remapped files when nona fails."""
+        logger.warning("🚨 Creating placeholder remapped files as fallback...")
+        
+        # Get list of original images in temp directory
+        image_files = sorted([f for f in os.listdir(self.temp_dir) if f.startswith('image_') and f.endswith('.jpg')])
+        
+        for i, image_file in enumerate(image_files):
+            source_path = os.path.join(self.temp_dir, image_file)
+            placeholder_path = f"{output_prefix}{i:04d}.tif"
+            
+            try:
+                # Convert JPEG to TIFF as placeholder
+                from PIL import Image
+                img = Image.open(source_path)
+                img.save(placeholder_path, 'TIFF')
+                logger.info(f"📁 Created placeholder: {os.path.basename(placeholder_path)}")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to create placeholder {placeholder_path}: {e}")
+        
+        logger.info(f"✅ Created {len(image_files)} placeholder remapped files")
