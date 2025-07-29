@@ -1012,20 +1012,37 @@ class HuginPanoramaStitcher:
         
         for line in lines:
             if line.startswith('i '):
-                # Extract filename from the 'i' line - it's typically the last part
+                # Extract filename from the 'i' line using proper PTO format parsing
                 parts = line.strip().split()
                 filename = None
                 
-                # The filename is usually the last parameter that doesn't start with a parameter prefix
+                # In PTO format, the filename is the last token that looks like a file path
+                # It should contain a file extension or be a path
                 for part in reversed(parts):
-                    if not part.startswith(('i', 'w', 'h', 'f', 'v', 'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Eev', 'Er', 'Eb', 'r', 'p', 'y', 'TrX', 'TrY', 'TrZ', 'Tpy', 'Tpp', 'j', 'a', 'b', 'c', 'd', 'e', 'g', 't', 'Va', 'Vb', 'Vc', 'Vd', 'Vx', 'Vy', 'S', 'n')):
-                        filename = part.strip('"')
+                    part_clean = part.strip('"')
+                    # Skip parameter prefixes and values that look like parameters
+                    if (not part.startswith(('i', 'w', 'h', 'f', 'v', 'Ra', 'Rb', 'Rc', 'Rd', 'Re', 'Eev', 'Er', 'Eb', 'r', 'p', 'y', 'TrX', 'TrY', 'TrZ', 'Tpy', 'Tpp', 'j', 'a', 'b', 'c', 'd', 'e', 'g', 't', 'Va', 'Vb', 'Vc', 'Vd', 'Vx', 'Vy', 'S', 'n')) and
+                        # Must look like a file (contains extension or slash) and be reasonable length
+                        ('.' in part_clean or '/' in part_clean or '\\' in part_clean) and
+                        len(part_clean) > 3 and 
+                        # Avoid parameter values that might contain dots (like "1.5")
+                        not part_clean.replace('.', '').replace('-', '').isdigit()):
+                        filename = part_clean
                         break
+                
+                # Fallback: if no obvious filename found, look for image_*.jpg pattern
+                if not filename:
+                    for part in reversed(parts):
+                        part_clean = part.strip('"')
+                        if part_clean.startswith('image_') and part_clean.endswith('.jpg'):
+                            filename = part_clean
+                            break
                 
                 if filename:
                     # Check if file exists as absolute path
                     if os.path.exists(filename):
                         image_files_found.append(filename)
+                        logger.debug(f"Found existing image file: {filename}")
                     else:
                         # Try to find file in temp directory
                         basename = os.path.basename(filename)
@@ -1037,7 +1054,14 @@ class HuginPanoramaStitcher:
                             logger.info(f"Fixed image path: {basename} -> {temp_path}")
                         else:
                             logger.error(f"Image file not found: {filename} or {temp_path}")
+                            logger.error(f"PTO line was: {line.strip()}")
+                            logger.error(f"Parsed filename: '{filename}', basename: '{basename}'")
+                            logger.error(f"Temp directory contents: {os.listdir(self.temp_dir)}")
                             raise RuntimeError(f"Missing image file: {basename}")
+                else:
+                    logger.warning(f"Could not extract filename from PTO line: {line.strip()}")
+                    # Try to continue without this image rather than failing completely
+                    continue
             
             modified_lines.append(line)
         
