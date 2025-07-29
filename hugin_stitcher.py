@@ -1297,7 +1297,76 @@ class HuginPanoramaStitcher:
             "--center", "-o", output_file, project_file  # Remove --straighten for 360°
         ]
         self._run_hugin_command(command)
+        
+        # CRITICAL FIX: Sanitize the final PTO file to ensure no numeric file references
+        self._sanitize_final_pto_file(output_file)
+        
         return output_file
+    
+    def _sanitize_final_pto_file(self, project_file: str):
+        """Ensure the final PTO file has correct image paths and no numeric references."""
+        logger.info("🧹 Sanitizing final PTO file to remove numeric file references...")
+        
+        with open(project_file, 'r') as f:
+            lines = f.readlines()
+        
+        # Get available image files
+        image_files = sorted([f for f in os.listdir(self.temp_dir) if f.startswith('image_') and f.endswith('.jpg')])
+        logger.info(f"📁 Available image files for sanitization: {len(image_files)} files")
+        
+        sanitized_lines = []
+        image_line_count = 0
+        
+        for line in lines:
+            if line.startswith('i '):
+                # This is an image line - ensure it has the correct filename
+                if image_line_count < len(image_files):
+                    image_filename = image_files[image_line_count]
+                    full_path = os.path.join(self.temp_dir, image_filename)
+                    
+                    # Remove any existing filename and add the correct one
+                    line_parts = line.strip().split()
+                    new_line_parts = []
+                    
+                    for part in line_parts:
+                        # Skip any part that looks like a filename or path
+                        if ('/' in part or '\\' in part or part.startswith('"') or 
+                            part.isdigit() or part.startswith('image_')):
+                            continue
+                        new_line_parts.append(part)
+                    
+                    # Add the correct filename at the end
+                    new_line_parts.append(f'"{full_path}"')
+                    line = ' '.join(new_line_parts) + '\n'
+                    
+                    logger.info(f"🔧 Sanitized image line {image_line_count}: {image_filename}")
+                    image_line_count += 1
+                else:
+                    logger.warning(f"⚠️ More image lines than available files - skipping line {image_line_count}")
+                    continue
+            
+            elif line.startswith('c '):
+                # Control point line - remove entirely to avoid numeric references
+                logger.info("🚫 Removed control point line to prevent numeric file references")
+                continue
+            
+            sanitized_lines.append(line)
+        
+        # Write the sanitized file back
+        with open(project_file, 'w') as f:
+            f.writelines(sanitized_lines)
+        
+        logger.info(f"✅ Sanitized PTO file: {image_line_count} image lines, removed all control points")
+        
+        # Debug: Show final sanitized content
+        with open(project_file, 'r') as f:
+            content = f.read()
+            logger.info(f"📋 Final sanitized PTO file has {content.count('i ')} image lines")
+            
+            # Log first few image lines to verify
+            for i, line in enumerate(content.split('\n')):
+                if line.startswith('i ') and i < 3:
+                    logger.info(f"📷 Sanitized line {i}: {line}")
     
     def _stitch_and_blend(self, project_file: str, progress_callback=None) -> str:
         if progress_callback:
@@ -1455,13 +1524,29 @@ class HuginPanoramaStitcher:
             placeholder_path = f"{output_prefix}{i:04d}.tif"
             
             try:
-                # Convert JPEG to TIFF as placeholder
+                # Convert JPEG to TIFF with alpha channel for enblend compatibility
                 from PIL import Image
                 img = Image.open(source_path)
-                img.save(placeholder_path, 'TIFF')
-                logger.info(f"📁 Created placeholder: {os.path.basename(placeholder_path)}")
+                
+                # Convert to RGBA to ensure alpha channel exists for enblend
+                if img.mode != 'RGBA':
+                    img = img.convert('RGBA')
+                
+                # Create a white background with full opacity alpha channel
+                background = Image.new('RGBA', img.size, (255, 255, 255, 255))
+                if img.mode == 'RGBA':
+                    # Composite with alpha if source has alpha
+                    img = Image.alpha_composite(background, img)
+                else:
+                    # Just paste if no alpha
+                    background.paste(img, (0, 0))
+                    img = background
+                
+                # Save as TIFF with alpha channel
+                img.save(placeholder_path, 'TIFF', compression='lzw')
+                logger.info(f"📁 Created placeholder with alpha: {os.path.basename(placeholder_path)}")
                 
             except Exception as e:
                 logger.warning(f"⚠️ Failed to create placeholder {placeholder_path}: {e}")
         
-        logger.info(f"✅ Created {len(image_files)} placeholder remapped files")
+        logger.info(f"✅ Created {len(image_files)} placeholder remapped files with alpha channels")
