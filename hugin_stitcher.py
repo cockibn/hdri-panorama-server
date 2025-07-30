@@ -361,15 +361,23 @@ class EfficientHuginStitcher:
         """Blend remapped images using enblend."""
         output_path = os.path.join(self.temp_dir, "final_panorama.tif")
         
-        # Research-optimized enblend command
+        # Compatible enblend command (research-optimized)
         cmd = [
             "enblend",
             "-o", output_path,
-            "--compression=lzw",  # Good compression for intermediate files
-            "-m", "2048"         # Cache size in MB (adjust based on available RAM)
+            "--compression", "lzw",  # Separate parameter for compatibility
+            "-m", "2048"            # Cache size in MB
         ] + tiff_files
         
-        self._run_command(cmd, "enblend")
+        try:
+            self._run_command(cmd, "enblend")
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Enblend with compression failed: {e}")
+            logger.info("🔄 Trying simplified enblend without compression...")
+            
+            # Fallback: simplified enblend without compression
+            simple_cmd = ["enblend", "-o", output_path, "-m", "2048"] + tiff_files
+            self._run_command(simple_cmd, "enblend (simplified)")
         
         if not os.path.exists(output_path):
             raise RuntimeError("enblend failed to create final panorama")
