@@ -320,8 +320,8 @@ class CorrectHuginStitcher:
         """Step 6: Render images using nona."""
         output_prefix = os.path.join(self.temp_dir, "rendered")
         
-        # Official nona command
-        cmd = ["nona", "-m", "TIFF_m", "-o", output_prefix, project_file]
+        # Use uncompressed TIFF for better enblend compatibility
+        cmd = ["nona", "-m", "TIFF", "-o", output_prefix, project_file]
         self._run_command(cmd, "nona")
         
         # Find generated TIFF files
