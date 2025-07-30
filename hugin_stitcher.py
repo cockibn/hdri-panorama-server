@@ -484,13 +484,21 @@ class CorrectHuginStitcher:
             'pipeline': 'pto_gen → cpfind → cpclean → autooptimiser → pano_modify → nona → enblend'
         }
         
-        # Quality analysis
+        # Quality analysis - convert to uint8 for OpenCV compatibility
         if len(panorama.shape) == 3:
-            gray = cv2.cvtColor(panorama, cv2.COLOR_BGR2GRAY)
+            # Convert float32 EXR to uint8 for analysis
+            if panorama.dtype == np.float32:
+                display_img = (np.clip(panorama, 0, 1) * 255).astype(np.uint8)
+            else:
+                display_img = panorama
+            gray = cv2.cvtColor(display_img, cv2.COLOR_BGR2GRAY)
         else:
-            gray = panorama
+            if panorama.dtype == np.float32:
+                gray = (np.clip(panorama, 0, 1) * 255).astype(np.uint8)
+            else:
+                gray = panorama
         
-        # Sharpness
+        # Sharpness analysis on uint8 version
         laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
         metrics['sharpness'] = round(laplacian_var, 2)
         
