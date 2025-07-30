@@ -107,9 +107,34 @@ class CorrectHuginStitcher:
                 panorama_path = self._blend_images(tiff_files)
                 
                 # Load and return result
+                logger.info(f"📁 Loading final panorama from: {panorama_path}")
+                
+                # Check if file exists and get info
+                import os
+                if os.path.exists(panorama_path):
+                    file_size = os.path.getsize(panorama_path)
+                    logger.info(f"📊 Final panorama file: {file_size} bytes")
+                else:
+                    logger.error(f"❌ Final panorama file not found: {panorama_path}")
+                    raise RuntimeError(f"Final panorama file not found: {panorama_path}")
+                
                 panorama = cv2.imread(panorama_path, cv2.IMREAD_UNCHANGED)
                 if panorama is None:
-                    raise RuntimeError("Failed to load final panorama")
+                    # Try different loading methods
+                    logger.warning("⚠️ Standard CV2 loading failed, trying alternatives...")
+                    
+                    # Try loading as TIFF with PIL
+                    try:
+                        from PIL import Image
+                        import numpy as np
+                        pil_image = Image.open(panorama_path)
+                        panorama = np.array(pil_image)
+                        if len(panorama.shape) == 3:
+                            panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+                        logger.info(f"✅ Loaded with PIL: {panorama.shape}")
+                    except Exception as e:
+                        logger.error(f"❌ PIL loading also failed: {e}")
+                        raise RuntimeError(f"Failed to load final panorama with both CV2 and PIL: {e}")
                 
                 processing_time = time.time() - start_time
                 quality_metrics = self._calculate_quality_metrics(panorama, len(images), processing_time)
