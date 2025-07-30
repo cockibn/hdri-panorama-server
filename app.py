@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from hugin_stitcher import EfficientHuginStitcher
+from hugin_stitcher import CorrectHuginStitcher
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -161,8 +161,8 @@ class PanoramaProcessor:
     def __init__(self, output_resolution: str = None):
         # Allow override via environment variable for deployment flexibility
         resolution = output_resolution or os.environ.get('PANORAMA_RESOLUTION', '6K')
-        self.stitcher = EfficientHuginStitcher(output_resolution=resolution)
-        logger.info(f"Efficient Hugin stitcher initialized with {resolution} resolution.")
+        self.stitcher = CorrectHuginStitcher(output_resolution=resolution)
+        logger.info(f"Official Hugin stitcher initialized with {resolution} resolution.")
 
     def process_session(self, job_id: str, session_data: dict, image_files: List[str]):
         """Process a complete panorama session using the Hugin engine."""
@@ -526,11 +526,11 @@ def health_check():
                 "memoryUsagePercent": round(memory.percent, 1),
                 "diskFreeGB": round(disk_usage.free / (1024**3), 2)
             },
-            "efficientHugin": {
-                "architecture": "Streamlined 2025",
-                "researchOptimized": True,
-                "ultraWideCalibrated": True,
-                "pipeline": "pto_gen → cpfind → autooptimiser → nona → enblend"
+            "officialHugin": {
+                "architecture": "Official 2024 Workflow",
+                "researchBased": True,
+                "documentation": "wiki.panotools.org",
+                "pipeline": "pto_gen → cpfind → cpclean → autooptimiser → pano_modify → nona → enblend"
             }
         }
         
