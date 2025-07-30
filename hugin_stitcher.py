@@ -335,15 +335,16 @@ class CorrectHuginStitcher:
         return tiff_paths
     
     def _blend_images(self, tiff_files: List[str]) -> str:
-        """Step 7: Blend images using enblend."""
-        output_path = os.path.join(self.temp_dir, "final_panorama.tif")
+        """Step 7: Blend images using enblend, then convert to EXR."""
+        tiff_output = os.path.join(self.temp_dir, "final_panorama.tif")
+        exr_output = os.path.join(self.temp_dir, "final_panorama.exr")
         
         logger.info(f"🎨 Blending {len(tiff_files)} images with optimized enblend...")
         
         # Fast enblend for large panoramas
         cmd = [
             "enblend", 
-            "-o", output_path,
+            "-o", tiff_output,
             "--levels=10",      # Much fewer levels for speed
         ] + tiff_files
         
@@ -355,7 +356,7 @@ class CorrectHuginStitcher:
                 logger.warning("⚠️ Fast enblend timed out, trying ultra-fast version...")
                 ultrafast_cmd = [
                     "enblend", 
-                    "-o", output_path,
+                    "-o", tiff_output,
                     "--levels=5"  # Minimal levels
                 ] + tiff_files
                 
@@ -364,20 +365,45 @@ class CorrectHuginStitcher:
                 except RuntimeError:
                     # Last resort: basic enblend with long timeout
                     logger.warning("⚠️ Ultra-fast enblend failed, trying basic version...")
-                    basic_cmd = ["enblend", "-o", output_path] + tiff_files
+                    basic_cmd = ["enblend", "-o", tiff_output] + tiff_files
                     self._run_command(basic_cmd, "enblend", timeout=1200)  # 20 minutes
             else:
                 # Non-timeout error, try basic version
                 logger.warning("⚠️ Fast enblend failed with error, trying basic version...")
-                basic_cmd = ["enblend", "-o", output_path] + tiff_files
+                basic_cmd = ["enblend", "-o", tiff_output] + tiff_files
                 self._run_command(basic_cmd, "enblend", timeout=900)
         
-        if not os.path.exists(output_path):
+        if not os.path.exists(tiff_output):
             raise RuntimeError("enblend failed to create final panorama")
         
-        file_size = os.path.getsize(output_path)
-        logger.info(f"🎨 Images blended successfully - output: {file_size} bytes")
-        return output_path
+        tiff_size = os.path.getsize(tiff_output)
+        logger.info(f"🎨 Images blended successfully - TIFF: {tiff_size} bytes")
+        
+        # Convert TIFF to EXR for HDR output
+        logger.info("🌟 Converting to EXR for HDR output...")
+        tiff_image = cv2.imread(tiff_output, cv2.IMREAD_UNCHANGED)
+        if tiff_image is None:
+            raise RuntimeError("Failed to load blended TIFF for EXR conversion")
+        
+        # Convert to float32 for EXR
+        if tiff_image.dtype != np.float32:
+            if tiff_image.dtype == np.uint8:
+                tiff_image = tiff_image.astype(np.float32) / 255.0
+            elif tiff_image.dtype == np.uint16:
+                tiff_image = tiff_image.astype(np.float32) / 65535.0
+            else:
+                tiff_image = tiff_image.astype(np.float32)
+        
+        # Save as EXR with HDR format
+        cv2.imwrite(exr_output, tiff_image, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+        
+        if not os.path.exists(exr_output):
+            raise RuntimeError("Failed to create EXR output")
+        
+        exr_size = os.path.getsize(exr_output)
+        logger.info(f"🌟 EXR conversion complete - output: {exr_size} bytes")
+        
+        return exr_output
     
     def _run_command(self, cmd: List[str], tool_name: str, timeout: int = 300):
         """Run Hugin command with error handling."""
