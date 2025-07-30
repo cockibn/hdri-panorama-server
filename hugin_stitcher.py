@@ -237,6 +237,10 @@ class EfficientHuginStitcher:
         try:
             self._run_command(cmd, "cpfind")
             
+            # Verify the output file was created
+            if not os.path.exists(cp_project):
+                raise RuntimeError("cpfind did not create output file")
+            
             # Verify control points were found
             cp_count = self._count_control_points(cp_project)
             logger.info(f"🎯 Found {cp_count} control points")
@@ -247,11 +251,31 @@ class EfficientHuginStitcher:
             return cp_project
             
         except RuntimeError as e:
-            logger.warning(f"⚠️ cpfind failed: {e}")
+            logger.warning(f"⚠️ Enhanced cpfind failed: {e}")
+            logger.info("🔄 Trying simplified cpfind...")
+            
+            # Try simplified cpfind without advanced parameters
+            try:
+                simple_cmd = ["cpfind", "-o", cp_project, project_file]
+                self._run_command(simple_cmd, "cpfind (simplified)")
+                
+                if os.path.exists(cp_project):
+                    cp_count = self._count_control_points(cp_project)
+                    logger.info(f"🎯 Simplified cpfind found {cp_count} control points")
+                    return cp_project
+                    
+            except RuntimeError as simple_e:
+                logger.warning(f"⚠️ Simplified cpfind also failed: {simple_e}")
+            
             logger.info("📍 Falling back to ARKit positioning without control points")
+            
+            # Ensure original project file exists before copying
+            if not os.path.exists(project_file):
+                raise RuntimeError(f"Original project file not found: {project_file}")
             
             # Copy original project as fallback
             shutil.copy2(project_file, cp_project)
+            logger.info(f"✅ Created fallback project without control points")
             return cp_project
     
     def _optimize_panorama(self, project_file: str) -> str:
@@ -356,6 +380,7 @@ class EfficientHuginStitcher:
     def _run_command(self, cmd: List[str], tool_name: str, timeout: int = 300):
         """Run Hugin command with proper error handling."""
         logger.debug(f"🔧 Running {tool_name}: {' '.join(cmd)}")
+        logger.debug(f"🔧 Working directory: {self.temp_dir}")
         
         try:
             result = subprocess.run(
@@ -367,6 +392,11 @@ class EfficientHuginStitcher:
                 cwd=self.temp_dir
             )
             
+            if result.stdout:
+                logger.debug(f"✅ {tool_name} stdout: {result.stdout[:500]}")
+            if result.stderr:
+                logger.debug(f"⚠️ {tool_name} stderr: {result.stderr[:500]}")
+            
             return result.stdout, result.stderr
             
         except subprocess.CalledProcessError as e:
@@ -375,10 +405,17 @@ class EfficientHuginStitcher:
                 error_msg += f": {e.stderr[:200]}"
             
             logger.error(f"❌ {error_msg}")
+            logger.error(f"❌ Command: {' '.join(cmd)}")
+            if e.stdout:
+                logger.error(f"❌ stdout: {e.stdout[:500]}")
+            
             raise RuntimeError(error_msg)
         
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"{tool_name} timed out after {timeout}s")
+        
+        except FileNotFoundError as e:
+            raise RuntimeError(f"{tool_name} command not found: {cmd[0]}")
     
     def _count_control_points(self, project_file: str) -> int:
         """Count control points in PTO file."""
