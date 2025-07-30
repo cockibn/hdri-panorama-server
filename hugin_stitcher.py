@@ -74,6 +74,7 @@ class CorrectHuginStitcher:
                     progress_callback(0.30, "Finding control points with multirow strategy...")
                 
                 cp_project = self._find_control_points(project_file)
+                self.control_points_found = self._count_control_points(cp_project)
                 
                 # Step 3: Clean control points
                 if progress_callback:
@@ -112,6 +113,9 @@ class CorrectHuginStitcher:
                 
                 processing_time = time.time() - start_time
                 quality_metrics = self._calculate_quality_metrics(panorama, len(images), processing_time)
+                
+                # Add control point information to metrics
+                quality_metrics['controlPoints'] = getattr(self, 'control_points_found', 0)
                 
                 logger.info(f"🎉 Official Hugin workflow completed in {processing_time:.1f}s")
                 
@@ -203,11 +207,21 @@ class CorrectHuginStitcher:
         """Step 5: Set output parameters using pano_modify."""
         final_project = os.path.join(self.temp_dir, "project_final.pto")
         
+        # Check for crop mode preference (AUTO removes black areas, NONE keeps full canvas)
+        crop_mode = os.environ.get('PANORAMA_CROP_MODE', 'AUTO')
+        
+        if crop_mode.upper() == 'NONE':
+            crop_param = "--crop=NONE"
+            logger.info(f"📐 Using full canvas mode: {self.canvas_size[0]}×{self.canvas_size[1]} (no cropping)")
+        else:
+            crop_param = "--crop=AUTO"
+            logger.info(f"📐 Using auto-crop mode: will crop to content area from {self.canvas_size[0]}×{self.canvas_size[1]} canvas")
+        
         # Official pano_modify command
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
-            "--crop=AUTO",                                             # Auto crop
+            crop_param,                                                # Crop mode
             "--projection=0",                                          # Equirectangular
             "-o", final_project,
             project_file
@@ -215,7 +229,9 @@ class CorrectHuginStitcher:
         
         self._run_command(cmd, "pano_modify")
         
-        logger.info(f"📐 Output parameters set: {self.canvas_size[0]}×{self.canvas_size[1]} equirectangular")
+        # Log the actual output parameters by reading the final project file
+        self._log_final_output_params(final_project)
+        
         return final_project
     
     def _render_images(self, project_file: str) -> List[str]:
@@ -301,6 +317,37 @@ class CorrectHuginStitcher:
         except:
             return 0
     
+    def _log_final_output_params(self, project_file: str):
+        """Log the actual output parameters from the final project file."""
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # Look for panorama line (starts with 'p')
+            for line in content.split('\n'):
+                if line.startswith('p '):
+                    # Extract parameters from panorama line
+                    parts = line.split()
+                    width = height = None
+                    crop_info = None
+                    
+                    for part in parts:
+                        if part.startswith('w'):
+                            width = part[1:]
+                        elif part.startswith('h'):
+                            height = part[1:]
+                        elif part.startswith('S'):
+                            crop_info = part[1:]  # Crop bounds
+                    
+                    if width and height:
+                        logger.info(f"📊 Final output will be: {width}×{height}")
+                        if crop_info:
+                            logger.info(f"📐 Crop bounds: {crop_info}")
+                        break
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not read final project parameters: {e}")
+    
     def _calculate_quality_metrics(self, panorama: np.ndarray, input_count: int,
                                  processing_time: float) -> Dict:
         """Calculate quality metrics."""
@@ -333,15 +380,32 @@ class CorrectHuginStitcher:
         total_pixels = gray.size
         metrics['coverage'] = round((non_black / total_pixels) * 100, 1)
         
-        # Overall score
+        # Control point quality assessment
+        theoretical_max_pairs = input_count * (input_count - 1) // 2
+        cp_efficiency = metrics.get('controlPoints', 0) / theoretical_max_pairs if theoretical_max_pairs > 0 else 0
+        metrics['controlPointEfficiency'] = round(cp_efficiency * 100, 1)
+        
+        # Overall score including control point quality
         quality_score = (
-            min(laplacian_var / 500, 1.0) * 0.3 +
+            min(laplacian_var / 500, 1.0) * 0.25 +
             min(metrics['contrast'] / 50, 1.0) * 0.2 +
-            (metrics['coverage'] / 100) * 0.3 +
-            min(input_count / 16, 1.0) * 0.2
+            (metrics['coverage'] / 100) * 0.25 +
+            min(input_count / 16, 1.0) * 0.15 +
+            cp_efficiency * 0.15
         )
         
         metrics['overallScore'] = round(quality_score, 3)
+        
+        # Add analysis comments
+        if metrics.get('controlPoints', 0) > 0:
+            if cp_efficiency > 0.8:
+                metrics['controlPointAnalysis'] = "Excellent feature matching"
+            elif cp_efficiency > 0.6:
+                metrics['controlPointAnalysis'] = "Good feature matching"
+            elif cp_efficiency > 0.4:
+                metrics['controlPointAnalysis'] = "Adequate feature matching"
+            else:
+                metrics['controlPointAnalysis'] = "Limited feature matching"
         
         return metrics
 

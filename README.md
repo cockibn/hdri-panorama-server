@@ -119,6 +119,31 @@ The server uses a streamlined, research-optimized 5-step Hugin workflow:
 
 ## Configuration
 
+### Output Resolution and Cropping
+
+The server supports different output strategies:
+
+**Resolution Options:**
+- `4K`: 4096×2048 canvas
+- `6K`: 6144×3072 canvas (default)
+- `8K`: 8192×4096 canvas
+
+**Crop Modes:**
+- `AUTO`: Automatically crops to remove black/unused areas (recommended)
+- `NONE`: Keeps full canvas size with black areas where no images exist
+
+**Important:** The actual output size depends on your capture coverage. For 16-point captures, AUTO crop typically produces ~1500×750 images (excellent quality) rather than the full canvas size, because it removes areas not covered by your images.
+
+To request specific settings:
+```python
+# In your iOS app or API request
+data = {
+    'resolution': '6K',      # 4K, 6K, or 8K
+    'crop_mode': 'AUTO',     # AUTO or NONE
+    'session_metadata': {...}
+}
+```
+
 ### Server Settings
 
 You can modify these settings in `app.py`:
@@ -165,12 +190,20 @@ iphone_ultrawide = {
 The server calculates comprehensive quality metrics for each processed panorama:
 
 - **Overall Score** - Weighted combination of all quality factors
-- **Seam Quality** - How well images blend together
-- **Feature Matches** - Number of successful feature correspondences
-- **Geometric Consistency** - Accuracy of image alignment
-- **Color Consistency** - Uniformity of colors across the panorama
+- **Control Points** - Number of feature correspondences found between images
+- **Control Point Efficiency** - Percentage of theoretical maximum control points achieved
+- **Control Point Analysis** - Quality assessment of feature matching
+- **Sharpness** - Image detail and focus quality
+- **Contrast** - Dynamic range and tonal variation
+- **Coverage** - Percentage of non-black pixels in output
 - **Processing Time** - Time taken to complete processing
 - **Processor** - Which engine was used (Hugin/OpenCV)
+
+**Control Point Reference:**
+- For 16 images: Theoretical maximum = 120 control point pairs
+- 100+ control points = Excellent feature matching
+- 80+ control points = Good feature matching  
+- 50+ control points = Adequate feature matching
 
 ## Docker Deployment
 

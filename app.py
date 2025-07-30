@@ -428,6 +428,15 @@ def process_panorama():
         logger.warning(f"Invalid resolution '{resolution}' requested, using 6K")
         resolution = '6K'
     
+    # Check for crop mode request
+    crop_mode = request.form.get('crop_mode', 'AUTO')
+    if crop_mode.upper() not in ['AUTO', 'NONE']:
+        logger.warning(f"Invalid crop mode '{crop_mode}' requested, using AUTO")
+        crop_mode = 'AUTO'
+    
+    # Set environment variable for this processing job
+    os.environ['PANORAMA_CROP_MODE'] = crop_mode.upper()
+    
     # Create processor with requested resolution for this job
     job_processor = PanoramaProcessor(output_resolution=resolution)
     
@@ -530,7 +539,9 @@ def health_check():
                 "architecture": "Official 2024 Workflow",
                 "researchBased": True,
                 "documentation": "wiki.panotools.org",
-                "pipeline": "pto_gen → cpfind → cpclean → autooptimiser → pano_modify → nona → enblend"
+                "pipeline": "pto_gen → cpfind → cpclean → autooptimiser → pano_modify → nona → enblend",
+                "cropModes": ["AUTO (removes black areas)", "NONE (full canvas)"],
+                "resolutions": ["4K (4096×2048)", "6K (6144×3072)", "8K (8192×4096)"]
             }
         }
         
