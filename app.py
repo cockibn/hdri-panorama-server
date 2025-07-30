@@ -42,7 +42,7 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"],
+    default_limits=["500 per day", "200 per hour"],  # More generous defaults for iOS app
     storage_uri=os.environ.get('REDIS_URL', 'memory://'),
     headers_enabled=True
 )
@@ -480,6 +480,7 @@ def process_panorama():
     return jsonify(response), 202
 
 @app.route('/v1/panorama/status/<job_id>', methods=['GET'])
+@limiter.limit("300 per minute")  # More generous limit for status polling
 def get_job_status(job_id: str):
     with job_lock:
         job = jobs.get(job_id)
