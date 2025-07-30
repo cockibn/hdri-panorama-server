@@ -205,6 +205,21 @@ class CorrectHuginStitcher:
         elevations = [cp.get('elevation', 0.0) for cp in capture_points]
         logger.info(f"📊 ARKit data ranges - Azimuth: {min(azimuths):.1f}° to {max(azimuths):.1f}°, Elevation: {min(elevations):.1f}° to {max(elevations):.1f}°")
         
+        # Check for spherical distribution
+        elevation_range = max(elevations) - min(elevations)
+        unique_elevations = len(set(round(e, 1) for e in elevations))
+        
+        if elevation_range < 10.0:  # Less than 10° elevation variation
+            logger.warning(f"⚠️ LIMITED ELEVATION RANGE: All images at similar elevation ({elevation_range:.1f}° range)")
+            logger.warning(f"⚠️ This will create a horizontal panorama strip, not a full 360° sphere")
+            logger.warning(f"⚠️ For full spherical panoramas, capture images at multiple elevation levels (-45°, 0°, +45°)")
+        
+        if unique_elevations < 2:
+            logger.warning(f"⚠️ ALL IMAGES AT SAME ELEVATION: {elevations[0]:.1f}°")
+            logger.warning(f"⚠️ Expected 3-level capture pattern with elevation variation")
+        
+        logger.info(f"📊 Capture pattern analysis: {unique_elevations} unique elevation levels, {elevation_range:.1f}° total range")
+        
         with open(project_file, 'w') as f:
             # Write PTO header
             f.write("# hugin project file\n")
