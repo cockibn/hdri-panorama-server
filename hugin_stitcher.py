@@ -340,31 +340,37 @@ class CorrectHuginStitcher:
         
         logger.info(f"🎨 Blending {len(tiff_files)} images with optimized enblend...")
         
-        # Compatible enblend command for older versions
+        # Fast enblend for large panoramas
         cmd = [
             "enblend", 
             "-o", output_path,
-            "--levels=20",      # Reduce levels for speed
+            "--levels=10",      # Much fewer levels for speed
         ] + tiff_files
         
         try:
-            self._run_command(cmd, "enblend", timeout=300)  # 5 minute timeout
-        except RuntimeError:
-            # Fallback: minimal enblend
-            logger.warning("⚠️ Optimized enblend failed, trying minimal version...")
-            simple_cmd = [
-                "enblend", 
-                "-o", output_path,
-                "--levels=20"  # Even fewer levels
-            ] + tiff_files
-            
-            try:
-                self._run_command(simple_cmd, "enblend", timeout=300)
-            except RuntimeError:
-                # Last resort: basic enblend
-                logger.warning("⚠️ Minimal enblend failed, trying basic version...")
+            self._run_command(cmd, "enblend", timeout=600)  # 10 minute timeout for large panoramas
+        except RuntimeError as e:
+            if "timed out" in str(e):
+                # If timeout, try even faster settings
+                logger.warning("⚠️ Fast enblend timed out, trying ultra-fast version...")
+                ultrafast_cmd = [
+                    "enblend", 
+                    "-o", output_path,
+                    "--levels=5"  # Minimal levels
+                ] + tiff_files
+                
+                try:
+                    self._run_command(ultrafast_cmd, "enblend", timeout=900)  # 15 minutes
+                except RuntimeError:
+                    # Last resort: basic enblend with long timeout
+                    logger.warning("⚠️ Ultra-fast enblend failed, trying basic version...")
+                    basic_cmd = ["enblend", "-o", output_path] + tiff_files
+                    self._run_command(basic_cmd, "enblend", timeout=1200)  # 20 minutes
+            else:
+                # Non-timeout error, try basic version
+                logger.warning("⚠️ Fast enblend failed with error, trying basic version...")
                 basic_cmd = ["enblend", "-o", output_path] + tiff_files
-                self._run_command(basic_cmd, "enblend", timeout=600)
+                self._run_command(basic_cmd, "enblend", timeout=900)
         
         if not os.path.exists(output_path):
             raise RuntimeError("enblend failed to create final panorama")
