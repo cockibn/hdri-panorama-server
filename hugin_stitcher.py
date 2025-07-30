@@ -338,31 +338,42 @@ class CorrectHuginStitcher:
         """Step 7: Blend images using enblend."""
         output_path = os.path.join(self.temp_dir, "final_panorama.tif")
         
-        # Official enblend command (minimal for compatibility)
-        cmd = ["enblend", "-o", output_path] + tiff_files
+        logger.info(f"🎨 Blending {len(tiff_files)} images with optimized enblend...")
+        
+        # Optimized enblend command for faster processing
+        cmd = [
+            "enblend", 
+            "-o", output_path,
+            "--levels=29",      # Reduce levels for speed
+            "--exposure-weight=0",  # Disable exposure correction for speed
+            "--saturation-weight=0",  # Disable saturation for speed
+            "--contrast-weight=1",   # Keep contrast only
+        ] + tiff_files
         
         try:
-            self._run_command(cmd, "enblend")
+            self._run_command(cmd, "enblend", timeout=300)  # 5 minute timeout
         except RuntimeError:
-            # Fallback: even simpler enblend
-            logger.warning("⚠️ Standard enblend failed, trying basic version...")
-            simple_cmd = ["enblend"] + tiff_files
+            # Fallback: minimal enblend
+            logger.warning("⚠️ Optimized enblend failed, trying minimal version...")
+            simple_cmd = [
+                "enblend", 
+                "-o", output_path,
+                "--levels=20"  # Even fewer levels
+            ] + tiff_files
             
-            # Redirect stdout to file
-            with open(output_path, 'wb') as f:
-                result = subprocess.run(
-                    simple_cmd,
-                    stdout=f,
-                    stderr=subprocess.PIPE,
-                    timeout=600,
-                    check=True,
-                    cwd=self.temp_dir
-                )
+            try:
+                self._run_command(simple_cmd, "enblend", timeout=300)
+            except RuntimeError:
+                # Last resort: basic enblend
+                logger.warning("⚠️ Minimal enblend failed, trying basic version...")
+                basic_cmd = ["enblend", "-o", output_path] + tiff_files
+                self._run_command(basic_cmd, "enblend", timeout=600)
         
         if not os.path.exists(output_path):
             raise RuntimeError("enblend failed to create final panorama")
         
-        logger.info("🎨 Images blended successfully")
+        file_size = os.path.getsize(output_path)
+        logger.info(f"🎨 Images blended successfully - output: {file_size} bytes")
         return output_path
     
     def _run_command(self, cmd: List[str], tool_name: str, timeout: int = 300):
