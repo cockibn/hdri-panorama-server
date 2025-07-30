@@ -200,6 +200,11 @@ class CorrectHuginStitcher:
         # iPhone ultra-wide camera parameters (106.2° FOV measured)
         fov = 106.2
         
+        # Analyze ARKit positioning data distribution
+        azimuths = [cp.get('azimuth', 0.0) for cp in capture_points]
+        elevations = [cp.get('elevation', 0.0) for cp in capture_points]
+        logger.info(f"📊 ARKit data ranges - Azimuth: {min(azimuths):.1f}° to {max(azimuths):.1f}°, Elevation: {min(elevations):.1f}° to {max(elevations):.1f}°")
+        
         with open(project_file, 'w') as f:
             # Write PTO header
             f.write("# hugin project file\n")
@@ -227,6 +232,14 @@ class CorrectHuginStitcher:
                 f.write(f'i w4032 h3024 f0 v{fov} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a0 b0 c0 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
                 
                 logger.info(f"📍 Image {i}: azimuth={azimuth:.1f}°, elevation={elevation:.1f}°, roll={roll:.1f}° → yaw={yaw:.1f}°, pitch={pitch:.1f}°")
+        
+        # Log the generated PTO file for analysis
+        try:
+            with open(project_file, 'r') as f:
+                pto_content = f.read()
+            logger.info(f"📝 Generated PTO file preview (first 500 chars):\n{pto_content[:500]}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not read generated PTO file: {e}")
         
         logger.info(f"✅ Generated positioned PTO with ARKit data covering {len(capture_points)} viewpoints")
     
@@ -320,9 +333,36 @@ class CorrectHuginStitcher:
         """Step 6: Render images using nona."""
         output_prefix = os.path.join(self.temp_dir, "rendered")
         
+        # Debug: Log the final project file before rendering
+        try:
+            with open(project_file, 'r') as f:
+                final_pto_content = f.read()
+            logger.info(f"📝 Final PTO file before nona rendering (first 800 chars):\n{final_pto_content[:800]}")
+            
+            # Count expected images in PTO file
+            image_lines = [line for line in final_pto_content.split('\n') if line.startswith('i ')]
+            logger.info(f"📊 PTO file contains {len(image_lines)} image definitions")
+            
+            # Analyze first few image positions
+            for i, line in enumerate(image_lines[:3]):
+                parts = line.split()
+                yaw_part = next((p for p in parts if p.startswith('y')), 'y0')
+                pitch_part = next((p for p in parts if p.startswith('p')), 'p0')
+                roll_part = next((p for p in parts if p.startswith('r')), 'r0')
+                logger.info(f"📍 Image {i} final position: {yaw_part}, {pitch_part}, {roll_part}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Could not analyze final PTO file: {e}")
+        
         # Use uncompressed TIFF for better enblend compatibility
         cmd = ["nona", "-m", "TIFF", "-o", output_prefix, project_file]
-        self._run_command(cmd, "nona")
+        stdout, stderr = self._run_command(cmd, "nona")
+        
+        # Log nona output for debugging
+        if stdout:
+            logger.info(f"📝 nona stdout: {stdout[:200]}")
+        if stderr:
+            logger.info(f"📝 nona stderr: {stderr[:200]}")
         
         # Find generated TIFF files
         tiff_files = sorted(Path(self.temp_dir).glob("rendered*.tif"))
@@ -331,10 +371,20 @@ class CorrectHuginStitcher:
         if not tiff_paths:
             raise RuntimeError("nona failed to generate TIFF files")
         
-        # Log file sizes to check for empty/invalid renders
+        # Enhanced logging with image dimensions
         for i, tiff_path in enumerate(tiff_paths):
             file_size = os.path.getsize(tiff_path)
-            logger.info(f"📄 Rendered image {i}: {file_size} bytes")
+            try:
+                import cv2
+                img = cv2.imread(tiff_path, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    logger.info(f"📄 Rendered image {i}: {file_size} bytes, {w}×{h} pixels")
+                else:
+                    logger.warning(f"📄 Rendered image {i}: {file_size} bytes, could not read dimensions")
+            except Exception as e:
+                logger.info(f"📄 Rendered image {i}: {file_size} bytes, dimension check failed: {e}")
+            
             if file_size < 1000:  # Very small file likely empty
                 logger.warning(f"⚠️ Rendered image {i} is suspiciously small: {file_size} bytes")
         
