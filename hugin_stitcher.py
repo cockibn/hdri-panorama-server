@@ -331,7 +331,17 @@ class CorrectHuginStitcher:
         if not tiff_paths:
             raise RuntimeError("nona failed to generate TIFF files")
         
-        logger.info(f"🗺️ Rendered {len(tiff_paths)} images")
+        # Log file sizes to check for empty/invalid renders
+        for i, tiff_path in enumerate(tiff_paths):
+            file_size = os.path.getsize(tiff_path)
+            logger.info(f"📄 Rendered image {i}: {file_size} bytes")
+            if file_size < 1000:  # Very small file likely empty
+                logger.warning(f"⚠️ Rendered image {i} is suspiciously small: {file_size} bytes")
+        
+        logger.info(f"🗺️ Rendered {len(tiff_paths)} images (expected 16)")
+        if len(tiff_paths) < 10:
+            logger.warning(f"⚠️ Only {len(tiff_paths)} images rendered from 16 input images - check ARKit positioning or canvas bounds")
+        
         return tiff_paths
     
     def _blend_images(self, tiff_files: List[str]) -> str:
