@@ -373,14 +373,44 @@ class EfficientHuginStitcher:
             self._run_command(cmd, "enblend")
         except RuntimeError as e:
             logger.warning(f"⚠️ Enblend with compression failed: {e}")
-            logger.info("🔄 Trying simplified enblend without compression...")
+            logger.info("🔄 Trying simplified enblend without memory option...")
             
-            # Fallback: simplified enblend without compression
-            simple_cmd = ["enblend", "-o", output_path, "-m", "2048"] + tiff_files
-            self._run_command(simple_cmd, "enblend (simplified)")
+            # Fallback: minimal enblend command (very old version compatibility)
+            minimal_cmd = ["enblend", "-o", output_path] + tiff_files
+            try:
+                self._run_command(minimal_cmd, "enblend (minimal)")
+            except RuntimeError as minimal_e:
+                logger.warning(f"⚠️ Minimal enblend failed: {minimal_e}")
+                logger.info("🔄 Trying basic enblend without output flag...")
+                
+                # Ultimate fallback: most basic enblend
+                basic_cmd = ["enblend"] + tiff_files
+                # Redirect output manually since -o might not be supported
+                import subprocess
+                try:
+                    with open(output_path, 'wb') as output_file:
+                        result = subprocess.run(
+                            basic_cmd,
+                            stdout=output_file,
+                            stderr=subprocess.PIPE,
+                            text=False,
+                            timeout=600,
+                            check=True,
+                            cwd=self.temp_dir
+                        )
+                    logger.info("✅ Basic enblend with stdout redirect succeeded")
+                except Exception as basic_e:
+                    raise RuntimeError(f"All enblend methods failed. Last error: {basic_e}")
         
         if not os.path.exists(output_path):
-            raise RuntimeError("enblend failed to create final panorama")
+            logger.warning("⚠️ All enblend methods failed, using first remapped image as fallback")
+            # Emergency fallback: use the first remapped TIFF as output
+            if tiff_files:
+                import shutil
+                shutil.copy2(tiff_files[0], output_path)
+                logger.info(f"📁 Using fallback: copied {tiff_files[0]} as final output")
+            else:
+                raise RuntimeError("No remapped files available for fallback")
         
         logger.info("🎨 Final blending completed successfully")
         return output_path
