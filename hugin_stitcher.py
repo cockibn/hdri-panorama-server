@@ -163,12 +163,16 @@ class HuginPanoramaStitcher:
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"Hugin tool timed out: {e.cmd}") from e
         except subprocess.CalledProcessError as e:
-            # Enhanced error logging for better debugging
-            logger.error(f"❌ Command failed: {' '.join(e.cmd)}")
-            logger.error(f"❌ Return code: {e.returncode}")
-            logger.error(f"❌ stdout: {e.stdout}")
-            logger.error(f"❌ stderr: {e.stderr}")
-            raise RuntimeError(f"Hugin tool failed: {e.cmd}\nReturn code: {e.returncode}\nStdout: {e.stdout}\nStderr: {e.stderr}") from e
+            # Production-safe error logging
+            if os.environ.get('ENV') == 'production':
+                logger.error(f"❌ Hugin command failed: {command[0]} (return code: {e.returncode})")
+                raise RuntimeError(f"Hugin tool failed: {os.path.basename(command[0])}") from e
+            else:
+                logger.error(f"❌ Command failed: {' '.join(e.cmd)}")
+                logger.error(f"❌ Return code: {e.returncode}")
+                logger.error(f"❌ stdout: {e.stdout}")
+                logger.error(f"❌ stderr: {e.stderr}")
+                raise RuntimeError(f"Hugin tool failed: {e.cmd}\nReturn code: {e.returncode}\nStdout: {e.stdout}\nStderr: {e.stderr}") from e
     
     def stitch_panorama(self, images: List[np.ndarray], capture_points: List[Dict], progress_callback=None, original_exif_data: List[Dict] = None) -> Tuple[np.ndarray, Dict]:
         start_time = time.time()

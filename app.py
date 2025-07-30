@@ -12,7 +12,9 @@ import uuid
 import json
 import time
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from functools import wraps
+import psutil
 
 # Enable OpenCV EXR codec for HDR output
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
@@ -21,6 +23,8 @@ from typing import Dict, List, Optional
 import logging
 
 from flask import Flask, request, jsonify, send_file, abort
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from werkzeug.utils import secure_filename
 import cv2
 import numpy as np
@@ -35,12 +39,119 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
+# Configure rate limiting
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri=os.environ.get('REDIS_URL', 'memory://'),
+    headers_enabled=True
+)
+
 UPLOAD_DIR, OUTPUT_DIR = Path("uploads"), Path("outputs")
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 jobs: Dict[str, Dict] = {}
 job_lock = threading.Lock()
+
+# Job cleanup configuration
+JOB_RETENTION_HOURS = int(os.environ.get('JOB_RETENTION_HOURS', '24'))
+CLEANUP_INTERVAL_MINUTES = int(os.environ.get('CLEANUP_INTERVAL_MINUTES', '60'))
+
+def cleanup_old_jobs():
+    """Remove jobs older than retention period to prevent memory leaks."""
+    try:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=JOB_RETENTION_HOURS)
+        
+        with job_lock:
+            expired_job_ids = []
+            for job_id, job_data in jobs.items():
+                try:
+                    last_updated = datetime.fromisoformat(job_data.get('lastUpdated', ''))
+                    if last_updated < cutoff_time:
+                        expired_job_ids.append(job_id)
+                except (ValueError, TypeError):
+                    # Invalid timestamp, mark for cleanup
+                    expired_job_ids.append(job_id)
+            
+            # Clean up expired jobs
+            for job_id in expired_job_ids:
+                try:
+                    # Clean up any associated files
+                    upload_dir = UPLOAD_DIR / job_id
+                    if upload_dir.exists():
+                        import shutil
+                        shutil.rmtree(upload_dir, ignore_errors=True)
+                    
+                    output_files = list(OUTPUT_DIR.glob(f"{job_id}_*"))
+                    for output_file in output_files:
+                        output_file.unlink(missing_ok=True)
+                    
+                    del jobs[job_id]
+                except Exception as e:
+                    logger.warning(f"Error cleaning up job {job_id}: {e}")
+            
+            if expired_job_ids:
+                logger.info(f"Cleaned up {len(expired_job_ids)} expired jobs")
+                
+    except Exception as e:
+        logger.error(f"Error during job cleanup: {e}")
+    
+    # Schedule next cleanup
+    cleanup_timer = threading.Timer(CLEANUP_INTERVAL_MINUTES * 60, cleanup_old_jobs)
+    cleanup_timer.daemon = True
+    cleanup_timer.start()
+
+def check_system_resources():
+    """Check if system has adequate resources for processing."""
+    try:
+        # Check disk space
+        disk_usage = psutil.disk_usage('/')
+        disk_free_percent = (disk_usage.free / disk_usage.total) * 100
+        
+        if disk_free_percent < 10:  # Less than 10% free
+            raise RuntimeError(f"Insufficient disk space: {disk_free_percent:.1f}% free")
+        
+        # Check memory
+        memory = psutil.virtual_memory()
+        if memory.percent > 90:  # More than 90% used
+            raise RuntimeError(f"Insufficient memory: {memory.percent:.1f}% used")
+        
+        # Check if too many active jobs
+        active_jobs = len([j for j in jobs.values() if j.get('state') == JobState.PROCESSING])
+        max_concurrent = int(os.environ.get('MAX_CONCURRENT_JOBS', '3'))
+        
+        if active_jobs >= max_concurrent:
+            raise RuntimeError(f"Too many active jobs: {active_jobs}/{max_concurrent}")
+            
+        return True
+        
+    except psutil.Error as e:
+        logger.warning(f"Could not check system resources: {e}")
+        return True  # Allow processing if we can't check resources
+
+def require_api_key(f):
+    """Decorator to require API key authentication."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Skip auth in development mode
+        if os.environ.get('DISABLE_AUTH') == 'true':
+            return f(*args, **kwargs)
+            
+        api_key = request.headers.get('X-API-Key')
+        expected_key = os.environ.get('API_KEY')
+        
+        if not expected_key:
+            # If no API key is configured, allow access (for development)
+            return f(*args, **kwargs)
+            
+        if not api_key or api_key != expected_key:
+            logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
+            return jsonify({"error": "Unauthorized"}), 401
+            
+        return f(*args, **kwargs)
+    return decorated_function
 
 class JobState:
     QUEUED, PROCESSING, COMPLETED, FAILED = "queued", "processing", "completed", "failed"
@@ -279,15 +390,34 @@ def extract_bundle_images(bundle_file, upload_dir):
 processor = PanoramaProcessor()
 
 @app.route('/v1/panorama/process', methods=['POST'])
+@limiter.limit("10 per minute")  # Strict rate limiting for processing endpoint
+@require_api_key
 def process_panorama():
-    logger.info(f"Processing request - form keys: {list(request.form.keys())}, files: {list(request.files.keys())}")
+    # Check system resources before processing
+    try:
+        check_system_resources()
+    except RuntimeError as e:
+        logger.error(f"Resource check failed: {e}")
+        return jsonify({"error": "Server temporarily unavailable", "details": str(e)}), 503
+    # Enhanced request logging (but don't expose sensitive details in production)
+    if os.environ.get('ENV') != 'production':
+        logger.info(f"Processing request - form keys: {list(request.form.keys())}, files: {list(request.files.keys())}")
+    else:
+        logger.info(f"Processing request received from {request.remote_addr}")
     
+    # Enhanced input validation
     if 'session_metadata' not in request.form:
-        logger.error("Missing session_metadata in request")
+        logger.warning(f"Missing session_metadata from {request.remote_addr}")
         return jsonify({"error": "Missing session_metadata"}), 400
     if 'images_zip' not in request.files:
-        logger.error("Missing images_zip in request files")
+        logger.warning(f"Missing images_zip from {request.remote_addr}")
         return jsonify({"error": "Missing images_zip file"}), 400
+    
+    # Validate file size
+    bundle_file = request.files['images_zip']
+    if bundle_file.content_length and bundle_file.content_length > app.config['MAX_CONTENT_LENGTH']:
+        logger.warning(f"File too large from {request.remote_addr}: {bundle_file.content_length} bytes")
+        return jsonify({"error": "File too large"}), 413
 
     job_id = str(uuid.uuid4())
     logger.info(f"Processing job {job_id}")
@@ -379,9 +509,59 @@ def preview_result(job_id: str):
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "activeJobs": len([j for j in jobs.values() if j["state"] == JobState.PROCESSING])})
+    try:
+        # System health metrics
+        disk_usage = psutil.disk_usage('/')
+        memory = psutil.virtual_memory()
+        active_jobs = len([j for j in jobs.values() if j.get("state") == JobState.PROCESSING])
+        total_jobs = len(jobs)
+        
+        health_status = {
+            "status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "version": "2.0.0",
+            "activeJobs": active_jobs,
+            "totalJobs": total_jobs,
+            "system": {
+                "diskUsagePercent": round((disk_usage.used / disk_usage.total) * 100, 1),
+                "memoryUsagePercent": round(memory.percent, 1),
+                "diskFreeGB": round(disk_usage.free / (1024**3), 2)
+            },
+            "huginOptimizations": {
+                "researchBased": True,
+                "fullScaleProcessing": True,
+                "sixteenBitBlending": True,
+                "optimizedForUltraWide": True
+            }
+        }
+        
+        # Determine overall health
+        if (disk_usage.used / disk_usage.total) > 0.9 or memory.percent > 90:
+            health_status["status"] = "degraded"
+        
+        return jsonify(health_status)
+        
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return jsonify({
+            "status": "error",
+            "error": "Health check failed",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
-    logger.info(f"🚀 Starting server on 0.0.0.0:{port}")
+    
+    # Start job cleanup scheduler
+    logger.info("🧹 Starting job cleanup scheduler...")
+    cleanup_old_jobs()
+    
+    # Log configuration
+    logger.info(f"🔧 Configuration:")
+    logger.info(f"   Job retention: {JOB_RETENTION_HOURS} hours")
+    logger.info(f"   Cleanup interval: {CLEANUP_INTERVAL_MINUTES} minutes")
+    logger.info(f"   Max concurrent jobs: {os.environ.get('MAX_CONCURRENT_JOBS', '3')}")
+    logger.info(f"   Authentication: {'Enabled' if os.environ.get('API_KEY') else 'Disabled (development)'}")
+    
+    logger.info(f"🚀 Starting Hugin research-optimized panorama server on 0.0.0.0:{port}")
     app.run(host='0.0.0.0', port=port, threaded=True)
