@@ -211,7 +211,7 @@ class EfficientHuginStitcher:
             f"c{self.iphone_ultrawide['distortion_c']:.4f} "
             f"d0.0000 e0.0000 g0.0000 t0.0000 "
             f"Va1 Vb0 Vc0 Vd0 Vx0 Vy0 Vm5 "
-            f"{image_path}\\n"
+            f"{image_path}\n"
         )
         
         return enhanced_line
@@ -302,7 +302,7 @@ class EfficientHuginStitcher:
                 # Create equirectangular projection line
                 eq_line = (
                     f"p f2 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 "
-                    f"E0 R0 n\\\"TIFF_m c:LZW\\\" u0 k0 b0\\n"
+                    f"E0 R0 n\"TIFF_m c:LZW\" u0 k0 b0\n"
                 )
                 modified_lines.append(eq_line)
             else:
@@ -385,7 +385,7 @@ class EfficientHuginStitcher:
         try:
             with open(project_file, 'r') as f:
                 content = f.read()
-            return content.count('\\nc ')  # Control point lines start with 'c '
+            return content.count('\nc ')  # Control point lines start with 'c '
         except:
             return 0
     

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# HDRi 360 Studio - Start OpenCV Panorama Processing Server
+# HDRi 360 Studio - Start Hugin Panorama Processing Server
 
-echo "🌍 Starting HDRi 360 Studio OpenCV Processing Server..."
+echo "🌍 Starting HDRi 360 Studio Hugin Processing Server..."
 
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# HDRi 360 Studio - OpenCV Panorama Processing Server Setup
+# HDRi 360 Studio - Hugin Panorama Processing Server Setup
 
-echo "🌍 HDRi 360 Studio - OpenCV Panorama Processing Server Setup"
+echo "🌍 HDRi 360 Studio - Hugin Panorama Processing Server Setup"
 echo "============================================================"
 
 # Check if Python 3 is installed

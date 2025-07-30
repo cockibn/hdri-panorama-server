@@ -25,7 +25,6 @@ import logging
 from flask import Flask, request, jsonify, send_file, abort
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from werkzeug.utils import secure_filename
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
