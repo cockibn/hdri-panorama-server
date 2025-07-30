@@ -67,7 +67,7 @@ class CorrectHuginStitcher:
                 if progress_callback:
                     progress_callback(0.15, "Generating project file...")
                 
-                project_file = self._generate_project_file(image_paths)
+                project_file = self._generate_project_file(image_paths, capture_points)
                 
                 # Step 2: Find control points (2024 multirow default)
                 if progress_callback:
@@ -137,16 +137,61 @@ class CorrectHuginStitcher:
         logger.info(f"📁 Saved {len(image_paths)} images")
         return image_paths
     
-    def _generate_project_file(self, image_paths: List[str]) -> str:
-        """Step 1: Generate project file using pto_gen."""
+    def _generate_project_file(self, image_paths: List[str], capture_points: List[Dict] = None) -> str:
+        """Step 1: Generate project file with ARKit positioning data."""
         project_file = os.path.join(self.temp_dir, "project.pto")
         
-        # Official pto_gen command
-        cmd = ["pto_gen", "-o", project_file] + image_paths
-        self._run_command(cmd, "pto_gen")
+        if capture_points and len(capture_points) == len(image_paths):
+            logger.info(f"🎯 Using ARKit positioning data for {len(capture_points)} images")
+            # Debug: Log first few capture points to understand data structure
+            for i, cp in enumerate(capture_points[:3]):
+                logger.info(f"🔍 Capture point {i}: {cp}")
+            self._generate_positioned_project(image_paths, capture_points, project_file)
+        else:
+            logger.warning(f"⚠️ No positioning data - falling back to basic pto_gen")
+            # Fallback to basic pto_gen
+            cmd = ["pto_gen", "-o", project_file] + image_paths
+            self._run_command(cmd, "pto_gen")
         
         logger.info(f"✅ Generated project file with {len(image_paths)} images")
         return project_file
+    
+    def _generate_positioned_project(self, image_paths: List[str], capture_points: List[Dict], project_file: str):
+        """Generate PTO file with ARKit positioning data."""
+        logger.info(f"🎯 Generating positioned project with {len(capture_points)} ARKit positions")
+        
+        # iPhone ultra-wide camera parameters (106.2° FOV measured)
+        fov = 106.2
+        
+        with open(project_file, 'w') as f:
+            # Write PTO header
+            f.write("# hugin project file\n")
+            f.write(f"p f2 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 n\"TIFF_m c:LZW\"\n")
+            f.write("m g1 i0 f0 m2 p0.00784314\n")
+            
+            # Write image lines with ARKit positioning
+            for i, (img_path, capture_point) in enumerate(zip(image_paths, capture_points)):
+                # Convert ARKit coordinates to Hugin angles
+                azimuth = capture_point.get('azimuth', 0.0)  # ARKit azimuth
+                elevation = capture_point.get('elevation', 0.0)  # ARKit elevation  
+                position = capture_point.get('position', [0.0, 0.0, 0.0])  # 3D position [x,y,z]
+                
+                # For now, use zero roll (could be derived from position if needed)
+                roll = 0.0
+                
+                # Convert to Hugin coordinate system
+                # ARKit: azimuth (0-360°), elevation (-90 to +90°)
+                # Hugin: yaw (-180 to +180°), pitch (-90 to +90°), roll (-180 to +180°)
+                yaw = azimuth if azimuth <= 180 else azimuth - 360
+                pitch = elevation
+                roll_hugin = roll if roll <= 180 else roll - 360
+                
+                # Write image line with positioning
+                f.write(f'i w4032 h3024 f0 v{fov} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a0 b0 c0 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
+                
+                logger.info(f"📍 Image {i}: azimuth={azimuth:.1f}°, elevation={elevation:.1f}°, roll={roll:.1f}° → yaw={yaw:.1f}°, pitch={pitch:.1f}°")
+        
+        logger.info(f"✅ Generated positioned PTO with ARKit data covering {len(capture_points)} viewpoints")
     
     def _find_control_points(self, project_file: str) -> str:
         """Step 2: Find control points using cpfind with 2024 multirow default."""
