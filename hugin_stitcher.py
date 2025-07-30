@@ -1274,7 +1274,6 @@ class HuginPanoramaStitcher:
                 "-l",                    # Optimize geometric parameters
                 "-s",                    # Optimize photometric parameters (exposure/color)
                 "--level-horizon",       # Force horizon leveling (our calibration is horizon-locked)
-                "--output-prefix", "ultra_wide_",  # Debug prefix for ultra-wide optimization
                 "-o", output_file, 
                 project_file
             ]
@@ -1850,7 +1849,7 @@ class HuginPanoramaStitcher:
         # Conservative optimization that preserves ARKit positioning while refining lens parameters
         try:
             # Try lens and photometric optimization only (preserve ARKit positions)
-            command = ["autooptimiser", "-l", "-s", "--output-prefix", "conservative_", "-o", output_file, input_file]
+            command = ["autooptimiser", "-l", "-s", "-o", output_file, input_file]
             self._run_hugin_command(command, timeout=180)
             logger.info("✅ Conservative lens+photometric optimization successful")
             return output_file
@@ -1866,7 +1865,7 @@ class HuginPanoramaStitcher:
         # and only optimize lens distortion parameters
         try:
             # Lens-only optimization preserving ARKit positions
-            command = ["autooptimiser", "-l", "--output-prefix", "arkit_", "-o", output_file, input_file]
+            command = ["autooptimiser", "-l", "-o", output_file, input_file]
             self._run_hugin_command(command, timeout=120)
             logger.info("✅ ARKit lens-only optimization successful")
             return output_file
