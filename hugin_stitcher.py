@@ -340,14 +340,11 @@ class CorrectHuginStitcher:
         
         logger.info(f"🎨 Blending {len(tiff_files)} images with optimized enblend...")
         
-        # Optimized enblend command for faster processing
+        # Compatible enblend command for older versions
         cmd = [
             "enblend", 
             "-o", output_path,
-            "--levels=29",      # Reduce levels for speed
-            "--exposure-weight=0",  # Disable exposure correction for speed
-            "--saturation-weight=0",  # Disable saturation for speed
-            "--contrast-weight=1",   # Keep contrast only
+            "--levels=20",      # Reduce levels for speed
         ] + tiff_files
         
         try:
