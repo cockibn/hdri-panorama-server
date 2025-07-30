@@ -163,10 +163,13 @@ class HuginPanoramaStitcher:
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"Hugin tool timed out: {e.cmd}") from e
         except subprocess.CalledProcessError as e:
-            # Production-safe error logging
+            # Enhanced production error logging for debugging
             if os.environ.get('ENV') == 'production':
                 logger.error(f"❌ Hugin command failed: {command[0]} (return code: {e.returncode})")
-                raise RuntimeError(f"Hugin tool failed: {os.path.basename(command[0])}") from e
+                logger.error(f"❌ Command: {' '.join(command)}")
+                if e.stderr:
+                    logger.error(f"❌ stderr: {e.stderr[:500]}")  # Log first 500 chars of stderr
+                raise RuntimeError(f"Hugin tool failed: {os.path.basename(command[0])} - {e.stderr[:200] if e.stderr else 'No error details'}") from e
             else:
                 logger.error(f"❌ Command failed: {' '.join(e.cmd)}")
                 logger.error(f"❌ Return code: {e.returncode}")
@@ -1493,9 +1496,10 @@ class HuginPanoramaStitcher:
                 for i, line in enumerate(image_lines[:3]):
                     logger.info(f"📷 nona image {i}: {line}")
             
-            # Try nona with detailed error capture
+            # Try nona with detailed error capture and compatibility mode
             logger.info(f"🔄 Running nona with output prefix: {output_prefix}")
-            self._run_hugin_command(["nona", "-m", "TIFF_m", "-o", output_prefix, project_file], timeout=600)
+            # Use compatibility mode without -m flag first
+            self._run_hugin_command(["nona", "-o", output_prefix, project_file], timeout=600)
             
         except RuntimeError as nona_error:
             logger.error(f"❌ nona failed: {nona_error}")
