@@ -1371,9 +1371,7 @@ class HuginPanoramaStitcher:
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",
             "--center",                     # Center the panorama
             "--straighten",                # Straighten horizon (we have calibrated horizon lock)
-            "--crop=CIRCLE",               # Optimize crop for 16-point coverage (-45° to +45° elevation)
-            "--output-exposure=0",         # Maintain original exposure (locked during capture)
-            "--output-range-compression=0", # No range compression for HDR output
+            # Remove problematic --crop=CIRCLE and range compression options
             "-o", output_file, project_file
         ]
         
@@ -1769,10 +1767,10 @@ class HuginPanoramaStitcher:
         # Build optimized PTO content
         pto_lines = []
         
-        # Enhanced panorama line with optimized equirectangular projection
+        # Enhanced panorama line with optimized equirectangular projection (fixed for production)
         pto_lines.append(
             f"p f2 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 "
-            f"E0 R0 n\"TIFF_m c:LZW r:CROP\" u0 k0 b0 "
+            f"E0 R0 n\"TIFF_m c:LZW\" u0 k0 b0 "
             f"S100,600,{self.canvas_size[0]-600},{self.canvas_size[1]-100}\n"  # Optimized crop for -45° to +45° elevation
         )
         
@@ -1783,18 +1781,23 @@ class HuginPanoramaStitcher:
         for i, image_filename in enumerate(image_files):
             full_path = os.path.join(self.temp_dir, image_filename)
             
-            # ENHANCED: Use actual 3-1-3-1-3-1-3-1 pattern positioning
+            # FIXED: Proper 16-point pattern positioning
             if i < 16:
-                # Replicate the exact 16-point pattern from the iOS app
-                column = i // 2 if i < 8 else (i - 8) // 2 + 4  # 8 columns
-                yaw = column * 45.0  # 45° azimuth spacing
+                # 16-point pattern: 8 columns, distributed as 3-1-3-1-3-1-3-1
+                # Column assignment for 16 points
+                if i < 8:
+                    # First 8 points: columns 0,0,0,1,2,2,2,3 (3-1-3-1 pattern for first half)
+                    column_map = [0, 0, 0, 1, 2, 2, 2, 3]
+                    elevation_map = [-45.0, 0.0, 45.0, 0.0, -45.0, 0.0, 45.0, 0.0]
+                else:
+                    # Second 8 points: columns 4,4,4,5,6,6,6,7 (3-1-3-1 pattern for second half)
+                    column_map = [4, 4, 4, 5, 6, 6, 6, 7]
+                    elevation_map = [-45.0, 0.0, 45.0, 0.0, -45.0, 0.0, 45.0, 0.0]
                 
-                # 3-1-3-1-3-1-3-1 elevation pattern
-                if column % 2 == 0:  # Even columns (0,2,4,6): 3 elevations
-                    elevations = [-45.0, 0.0, 45.0]
-                    pitch = elevations[i % 3] if i < 12 else elevations[(i-8) % 3]
-                else:  # Odd columns (1,3,5,7): 1 elevation (horizon)
-                    pitch = 0.0
+                idx = i if i < 8 else i - 8
+                column = column_map[idx]
+                yaw = column * 45.0  # 45° azimuth spacing (0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°)
+                pitch = elevation_map[idx]
             else:
                 # Fallback for non-16-point captures
                 yaw = i * (360.0 / len(image_files))
