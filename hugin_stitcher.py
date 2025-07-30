@@ -146,9 +146,21 @@ class CorrectHuginStitcher:
             # Debug: Log first few capture points to understand data structure
             for i, cp in enumerate(capture_points[:3]):
                 logger.info(f"🔍 Capture point {i}: {cp}")
-            self._generate_positioned_project(image_paths, capture_points, project_file)
+            
+            # Check if we have valid positioning data
+            has_positioning = any(
+                cp.get('azimuth') is not None and cp.get('elevation') is not None 
+                for cp in capture_points
+            )
+            
+            if has_positioning:
+                self._generate_positioned_project(image_paths, capture_points, project_file)
+            else:
+                logger.warning(f"⚠️ No valid azimuth/elevation data - falling back to basic pto_gen")
+                cmd = ["pto_gen", "-o", project_file] + image_paths
+                self._run_command(cmd, "pto_gen")
         else:
-            logger.warning(f"⚠️ No positioning data - falling back to basic pto_gen")
+            logger.warning(f"⚠️ No positioning data ({len(capture_points) if capture_points else 0} points vs {len(image_paths)} images) - falling back to basic pto_gen")
             # Fallback to basic pto_gen
             cmd = ["pto_gen", "-o", project_file] + image_paths
             self._run_command(cmd, "pto_gen")
