@@ -423,6 +423,25 @@ class CorrectHuginStitcher:
         logger.info(f"🗺️ Rendered {len(tiff_paths)} images (expected 16)")
         if len(tiff_paths) < 10:
             logger.warning(f"⚠️ Only {len(tiff_paths)} images rendered from 16 input images - check ARKit positioning or canvas bounds")
+            
+            # Debug: Analyze why only few images rendered
+            logger.info(f"🔍 DEBUG: Analyzing why only {len(tiff_paths)} images rendered:")
+            logger.info(f"📐 Canvas size: {self.canvas_size[0]}×{self.canvas_size[1]}")
+            
+            # Check control points
+            try:
+                cp_count = self._count_control_points(project_file)
+                logger.info(f"🔗 Final control points: {cp_count}")
+                if cp_count < 20:
+                    logger.warning(f"⚠️ Low control points ({cp_count}) - may cause alignment issues")
+            except:
+                logger.info("🔗 Could not count control points")
+                
+            # Log potential solutions
+            logger.info("💡 Possible causes:")
+            logger.info("   • Images positioned outside canvas during optimization")
+            logger.info("   • Insufficient feature matches between images")
+            logger.info("   • Coordinate system mismatch in optimization")
         
         return tiff_paths
     
