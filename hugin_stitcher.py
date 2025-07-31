@@ -311,21 +311,45 @@ class CorrectHuginStitcher:
         return clean_project
     
     def _optimize_panorama(self, project_file: str) -> str:
-        """Step 4: Optimize using autooptimiser."""
+        """Step 4: Optimize using autooptimiser with constrained parameters for ARKit positioning."""
         opt_project = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # Official autooptimiser command
-        cmd = [
-            "autooptimiser",
-            "-a",  # Optimize positions (yaw, pitch, roll)
-            "-m",  # Optimize photometric parameters
-            "-l",  # Optimize lens parameters
-            "-s",  # Optimize exposure
-            "-o", opt_project,
-            project_file
-        ]
+        # Check if we should preserve ARKit positioning
+        preserve_arkit_positioning = os.environ.get('PRESERVE_ARKIT_POSITIONING', 'true').lower() == 'true'
+        
+        if preserve_arkit_positioning and self._has_arkit_positioning(project_file):
+            logger.info("🎯 Using constrained optimization to preserve ARKit positioning")
+            
+            # Very conservative optimization - only optimize photometric parameters
+            # Skip position optimization (-a) to preserve our precise ARKit coordinates
+            cmd = [
+                "autooptimiser",
+                "-m",  # Optimize photometric parameters only
+                "-s",  # Optimize exposure only
+                "-o", opt_project,
+                project_file
+            ]
+            
+            logger.info("🔒 Preserving ARKit yaw/pitch positions, optimizing photometrics only")
+            
+        else:
+            logger.info("🔄 Using standard optimization (no ARKit positioning detected)")
+            
+            # Standard optimization for non-ARKit projects
+            cmd = [
+                "autooptimiser",
+                "-a",  # Optimize positions (yaw, pitch, roll)
+                "-m",  # Optimize photometric parameters
+                "-l",  # Optimize lens parameters
+                "-s",  # Optimize exposure
+                "-o", opt_project,
+                project_file
+            ]
         
         self._run_command(cmd, "autooptimiser")
+        
+        # Verify optimization didn't cluster images
+        self._analyze_optimization_results(project_file, opt_project)
         
         logger.info("✅ Panorama optimization completed")
         return opt_project
@@ -649,6 +673,123 @@ class CorrectHuginStitcher:
                 metrics['controlPointAnalysis'] = "Limited feature matching"
         
         return metrics
+    
+    def _has_arkit_positioning(self, project_file: str) -> bool:
+        """Check if project file contains ARKit positioning data."""
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # Look for image lines with non-zero yaw/pitch values (indicating ARKit positioning)
+            image_lines = [line for line in content.split('\n') if line.startswith('i ')]
+            
+            if len(image_lines) < 10:  # Should have many images for ARKit sessions
+                return False
+            
+            # Count images with significant yaw/pitch variation
+            yaw_values = []
+            pitch_values = []
+            
+            for line in image_lines:
+                parts = line.split()
+                yaw_part = next((p for p in parts if p.startswith('y')), 'y0')
+                pitch_part = next((p for p in parts if p.startswith('p')), 'p0')
+                
+                try:
+                    yaw = float(yaw_part[1:])
+                    pitch = float(pitch_part[1:])
+                    yaw_values.append(yaw)
+                    pitch_values.append(pitch)
+                except ValueError:
+                    continue
+            
+            if not yaw_values:
+                return False
+            
+            # Check for spherical distribution indicating ARKit positioning
+            yaw_range = max(yaw_values) - min(yaw_values)
+            pitch_range = max(pitch_values) - min(pitch_values)
+            unique_pitches = len(set(round(p, 1) for p in pitch_values))
+            
+            # ARKit sessions have wide yaw range and multiple elevation levels
+            has_spherical_distribution = yaw_range > 180 and unique_pitches >= 2
+            
+            logger.info(f"🔍 ARKit positioning check: yaw_range={yaw_range:.1f}°, pitch_range={pitch_range:.1f}°, unique_pitches={unique_pitches}")
+            logger.info(f"🎯 ARKit positioning detected: {has_spherical_distribution}")
+            
+            return has_spherical_distribution
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not check for ARKit positioning: {e}")
+            return False
+    
+    def _analyze_optimization_results(self, before_file: str, after_file: str):
+        """Analyze optimization results to detect clustering or canvas positioning issues."""
+        try:
+            # Compare image positions before and after optimization
+            before_positions = self._extract_image_positions(before_file)
+            after_positions = self._extract_image_positions(after_file)
+            
+            if not before_positions or not after_positions:
+                logger.warning("⚠️ Could not extract positions for optimization analysis")
+                return
+            
+            # Calculate position changes
+            max_yaw_change = 0
+            max_pitch_change = 0
+            clustered_images = 0
+            
+            for i, (before_yaw, before_pitch) in enumerate(before_positions):
+                if i < len(after_positions):
+                    after_yaw, after_pitch = after_positions[i]
+                    
+                    yaw_change = abs(after_yaw - before_yaw)
+                    pitch_change = abs(after_pitch - before_pitch)
+                    
+                    max_yaw_change = max(max_yaw_change, yaw_change)
+                    max_pitch_change = max(max_pitch_change, pitch_change)
+                    
+                    # Check if image moved significantly (potential clustering)
+                    if yaw_change > 45 or pitch_change > 30:
+                        clustered_images += 1
+            
+            logger.info(f"📊 Optimization analysis:")
+            logger.info(f"   • Max yaw change: {max_yaw_change:.1f}°")
+            logger.info(f"   • Max pitch change: {max_pitch_change:.1f}°")
+            logger.info(f"   • Images with large position changes: {clustered_images}")
+            
+            if clustered_images > len(before_positions) // 3:
+                logger.warning(f"⚠️ High position changes detected - optimization may have clustered images")
+                logger.warning(f"⚠️ This could explain why only 1 image renders (images clustered together)")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not analyze optimization results: {e}")
+    
+    def _extract_image_positions(self, project_file: str) -> list:
+        """Extract yaw/pitch positions from PTO file."""
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            positions = []
+            image_lines = [line for line in content.split('\n') if line.startswith('i ')]
+            
+            for line in image_lines:
+                parts = line.split()
+                yaw_part = next((p for p in parts if p.startswith('y')), 'y0')
+                pitch_part = next((p for p in parts if p.startswith('p')), 'p0')
+                
+                try:
+                    yaw = float(yaw_part[1:])
+                    pitch = float(pitch_part[1:])
+                    positions.append((yaw, pitch))
+                except ValueError:
+                    positions.append((0.0, 0.0))
+            
+            return positions
+            
+        except Exception:
+            return []
 
 # Compatibility alias
 EfficientHuginStitcher = CorrectHuginStitcher
