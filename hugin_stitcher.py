@@ -239,14 +239,21 @@ class CorrectHuginStitcher:
                 # Convert to Hugin coordinate system
                 # ARKit: azimuth (0-360°), elevation (-90 to +90°)
                 # Hugin: yaw (-180 to +180°), pitch (-90 to +90°), roll (-180 to +180°)
-                yaw = azimuth if azimuth <= 180 else azimuth - 360
+                
+                # FIXED: Proper coordinate system conversion
+                # ARKit azimuth 0° = East, Hugin yaw 0° = North
+                # Convert: ARKit azimuth → Hugin yaw with 90° offset
+                hugin_azimuth = (azimuth - 90) % 360
+                yaw = hugin_azimuth if hugin_azimuth <= 180 else hugin_azimuth - 360
+                
+                # Elevation maps directly to pitch (both systems: positive = up)
                 pitch = elevation
                 roll_hugin = roll if roll <= 180 else roll - 360
                 
                 # Write image line with positioning
                 f.write(f'i w4032 h3024 f0 v{fov} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a0 b0 c0 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
                 
-                logger.info(f"📍 Image {i}: azimuth={azimuth:.1f}°, elevation={elevation:.1f}°, roll={roll:.1f}° → yaw={yaw:.1f}°, pitch={pitch:.1f}°")
+                logger.info(f"📍 Image {i}: ARKit azimuth={azimuth:.1f}°, elevation={elevation:.1f}° → Hugin yaw={yaw:.1f}°, pitch={pitch:.1f}° (hugin_azimuth={hugin_azimuth:.1f}°)")
         
         # Log the generated PTO file for analysis
         try:
