@@ -29,10 +29,14 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from hugin_stitcher import CorrectHuginStitcher
-
+# Configure logging BEFORE importing modules that create loggers
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Ensure all loggers use INFO level
+logging.getLogger('hugin_stitcher').setLevel(logging.INFO)
+
+from hugin_stitcher import CorrectHuginStitcher
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024

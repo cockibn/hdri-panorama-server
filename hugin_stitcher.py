@@ -178,6 +178,16 @@ class CorrectHuginStitcher:
                 for cp in capture_points
             )
             
+            # Enhanced debugging for positioning data validation
+            positioning_results = []
+            for i, cp in enumerate(capture_points[:5]):  # Check first 5 points
+                azimuth = cp.get('azimuth')
+                elevation = cp.get('elevation')
+                positioning_results.append(f"Point {i}: az={azimuth}, el={elevation}")
+            
+            logger.info(f"🔍 POSITIONING CHECK: has_positioning={has_positioning}")
+            logger.info(f"🔍 POSITIONING DETAILS: {' | '.join(positioning_results)}")
+            
             if has_positioning:
                 self._generate_positioned_project(image_paths, capture_points, project_file)
             else:
