@@ -223,12 +223,12 @@ class PanoramaProcessor:
             
             capture_points = session_data.get('capturePoints', [])
             
-            # DEBUG: Log session data structure and capture points
-            logger.info(f"🔍 SESSION DATA KEYS: {list(session_data.keys())}")
-            logger.info(f"🔍 CAPTURE POINTS COUNT: {len(capture_points)}")
+            # DEBUG: Log session data structure and capture points  
+            logger.warning(f"🚨 FORCED DEBUG - SESSION DATA KEYS: {list(session_data.keys())}")
+            logger.warning(f"🚨 FORCED DEBUG - CAPTURE POINTS COUNT: {len(capture_points)}")
             if capture_points:
-                logger.info(f"🔍 FIRST CAPTURE POINT: {capture_points[0]}")
-                logger.info(f"🔍 CAPTURE POINT KEYS: {list(capture_points[0].keys()) if capture_points[0] else 'None'}")
+                logger.warning(f"🚨 FORCED DEBUG - FIRST CAPTURE POINT: {capture_points[0]}")
+                logger.warning(f"🚨 FORCED DEBUG - CAPTURE POINT KEYS: {list(capture_points[0].keys()) if capture_points[0] else 'None'}")
             
             # Pass original EXIF data to the stitcher for iPhone optimization
             panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points, progress_callback, original_exif_data)
