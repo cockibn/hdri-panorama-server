@@ -233,7 +233,7 @@ class CorrectHuginStitcher:
         with open(project_file, 'w') as f:
             # Write PTO header
             f.write("# hugin project file\n")
-            f.write(f"p f2 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 n\"TIFF_m c:LZW\"\n")
+            f.write(f"p f0 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 n\"TIFF_m c:LZW\"\n")
             f.write("m g1 i0 f0 m2 p0.00784314\n")
             
             # Write image lines with ARKit positioning
