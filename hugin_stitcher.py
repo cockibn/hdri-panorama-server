@@ -370,12 +370,13 @@ class CorrectHuginStitcher:
             crop_param = "--crop=AUTO"
             logger.info(f"📐 Using auto-crop mode: will crop to content area from {self.canvas_size[0]}×{self.canvas_size[1]} canvas")
         
-        # Official pano_modify command
+        # Official pano_modify command for 360° spherical panorama
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
             crop_param,                                                # Crop mode
             "--projection=0",                                          # Equirectangular
+            "--fov=360x180",                                          # Force 360° spherical coverage
             "-o", final_project,
             project_file
         ]
