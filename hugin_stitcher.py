@@ -401,8 +401,8 @@ class CorrectHuginStitcher:
             image_lines = [line for line in final_pto_content.split('\n') if line.startswith('i ')]
             logger.info(f"📊 PTO file contains {len(image_lines)} image definitions")
             
-            # Analyze first few image positions
-            for i, line in enumerate(image_lines[:3]):
+            # Analyze ALL image positions for debugging
+            for i, line in enumerate(image_lines):
                 parts = line.split()
                 yaw_part = next((p for p in parts if p.startswith('y')), 'y0')
                 pitch_part = next((p for p in parts if p.startswith('p')), 'p0')
