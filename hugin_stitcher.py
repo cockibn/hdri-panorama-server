@@ -376,7 +376,7 @@ class CorrectHuginStitcher:
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
             crop_param,                                                # Crop mode
             "--projection=0",                                          # Equirectangular
-            "--fov=360x180",                                          # Force 360° spherical coverage
+            "--fov=360",                                              # Force 360° horizontal coverage
             "-o", final_project,
             project_file
         ]
