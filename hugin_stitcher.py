@@ -383,10 +383,32 @@ class CorrectHuginStitcher:
         
         self._run_command(cmd, "pano_modify")
         
+        # CRITICAL FIX: Force v360 by directly editing PTO file
+        # pano_modify ignores --fov parameter, so we manually set it
+        self._force_spherical_fov(final_project)
+        
         # Log the actual output parameters by reading the final project file
         self._log_final_output_params(final_project)
         
         return final_project
+    
+    def _force_spherical_fov(self, project_file: str):
+        """Force 360° field of view by directly editing PTO file."""
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # Replace v179 (or any v value) with v360 for full spherical coverage
+            import re
+            content = re.sub(r'p f0 w(\d+) h(\d+) v\d+', r'p f0 w\1 h\2 v360', content)
+            
+            with open(project_file, 'w') as f:
+                f.write(content)
+            
+            logger.info("🔧 FORCED v360 field of view for full spherical panorama")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not force spherical FOV: {e}")
     
     def _render_images(self, project_file: str) -> List[str]:
         """Step 6: Render images using nona."""
