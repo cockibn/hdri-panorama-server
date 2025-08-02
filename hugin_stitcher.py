@@ -419,33 +419,104 @@ class CorrectHuginStitcher:
             image_lines = [line for line in final_pto_content.split('\n') if line.startswith('i ')]
             logger.info(f"📊 PTO file contains {len(image_lines)} image definitions")
             
-            # Analyze ALL image positions for debugging
+            # Analyze ALL image positions for debugging AND canvas bounds checking
             for i, line in enumerate(image_lines):
                 parts = line.split()
                 yaw_part = next((p for p in parts if p.startswith('y')), 'y0')
                 pitch_part = next((p for p in parts if p.startswith('p')), 'p0')
                 roll_part = next((p for p in parts if p.startswith('r')), 'r0')
-                logger.info(f"📍 Image {i} final position: {yaw_part}, {pitch_part}, {roll_part}")
+                
+                # Extract numeric values for bounds checking
+                try:
+                    yaw_val = float(yaw_part[1:]) if len(yaw_part) > 1 else 0.0
+                    pitch_val = float(pitch_part[1:]) if len(pitch_part) > 1 else 0.0
+                    
+                    # Check if positioning could cause images to fall outside canvas
+                    canvas_width, canvas_height = self.canvas_size
+                    
+                    # Calculate approximate pixel coordinates (rough estimation)
+                    # For equirectangular: x = (yaw + 180) * width / 360, y = (90 - pitch) * height / 180
+                    approx_x = (yaw_val + 180) * canvas_width / 360
+                    approx_y = (90 - pitch_val) * canvas_height / 180
+                    
+                    # Check bounds
+                    x_in_bounds = 0 <= approx_x <= canvas_width
+                    y_in_bounds = 0 <= approx_y <= canvas_height
+                    
+                    bounds_status = "✅" if (x_in_bounds and y_in_bounds) else "❌ OUT OF BOUNDS"
+                    
+                    logger.info(f"📍 Image {i} final position: {yaw_part}, {pitch_part}, {roll_part} → approx pixel ({approx_x:.0f}, {approx_y:.0f}) {bounds_status}")
+                    
+                    if not (x_in_bounds and y_in_bounds):
+                        logger.warning(f"⚠️ Image {i} may be positioned outside canvas bounds: yaw={yaw_val:.1f}°, pitch={pitch_val:.1f}°")
+                        
+                except (ValueError, IndexError) as e:
+                    logger.info(f"📍 Image {i} final position: {yaw_part}, {pitch_part}, {roll_part} [could not parse for bounds check: {e}]")
                 
         except Exception as e:
             logger.warning(f"⚠️ Could not analyze final PTO file: {e}")
         
-        # Use uncompressed TIFF for better enblend compatibility
+        # COMPREHENSIVE DEBUG: Log exact nona command before execution
         cmd = ["nona", "-m", "TIFF", "-o", output_prefix, project_file]
+        logger.info(f"🚀 EXECUTING NONA COMMAND: {' '.join(cmd)}")
+        logger.info(f"🚀 Output prefix: {output_prefix}")
+        logger.info(f"🚀 Project file: {project_file}")
+        logger.info(f"🚀 Expected output pattern: {output_prefix}*.tif")
+        
+        # Check canvas bounds before nona
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            canvas_line = next((line for line in content.split('\n') if line.startswith('p f0')), None)
+            if canvas_line:
+                logger.info(f"🎨 Final canvas line before nona: {canvas_line}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not check canvas line: {e}")
+        
         stdout, stderr = self._run_command(cmd, "nona")
         
-        # Log nona output for debugging
+        # Enhanced nona output logging
+        logger.info(f"📝 NONA EXECUTION COMPLETE")
         if stdout:
-            logger.info(f"📝 nona stdout: {stdout[:200]}")
+            logger.info(f"📝 nona stdout (full): {stdout}")
+        else:
+            logger.info(f"📝 nona stdout: [EMPTY]")
+            
         if stderr:
-            logger.info(f"📝 nona stderr: {stderr[:200]}")
+            logger.info(f"📝 nona stderr (full): {stderr}")
+        else:
+            logger.info(f"📝 nona stderr: [EMPTY]")
         
-        # Find generated TIFF files
+        # Find generated TIFF files with comprehensive debugging
         tiff_files = sorted(Path(self.temp_dir).glob("rendered*.tif"))
         tiff_paths = [str(f) for f in tiff_files]
         
+        # CRITICAL DEBUG: Check what files nona actually created
+        all_files = list(Path(self.temp_dir).glob("*"))
+        logger.info(f"🔍 ALL FILES in temp directory after nona: {[f.name for f in all_files]}")
+        
+        # Check for any nona-related files or error outputs
+        nona_related = [f for f in all_files if 'rendered' in f.name.lower() or 'nona' in f.name.lower()]
+        logger.info(f"🔍 Files containing 'rendered' or 'nona': {[f.name for f in nona_related]}")
+        
         if not tiff_paths:
-            raise RuntimeError("nona failed to generate TIFF files")
+            logger.error("❌ NONA FAILED TO GENERATE ANY TIFF FILES!")
+            logger.error(f"❌ Expected files matching pattern: rendered*.tif")
+            logger.error(f"❌ Check if nona command failed or images are positioned outside canvas")
+            
+            # Try to run nona with verbose output to get more details
+            try:
+                logger.info("🔧 DEBUGGING: Testing nona with verbose output...")
+                debug_cmd = ["nona", "-v", "-m", "TIFF", "-o", f"{output_prefix}_debug", project_file]
+                import subprocess
+                debug_result = subprocess.run(debug_cmd, capture_output=True, text=True, timeout=60)
+                logger.info(f"🔧 Debug nona return code: {debug_result.returncode}")
+                logger.info(f"🔧 Debug nona stdout: {debug_result.stdout}")
+                logger.info(f"🔧 Debug nona stderr: {debug_result.stderr}")
+            except Exception as debug_e:
+                logger.warning(f"⚠️ Debug nona test failed: {debug_e}")
+            
+            raise RuntimeError("nona failed to generate TIFF files - check positioning and canvas bounds")
         
         # Enhanced logging with image dimensions
         for i, tiff_path in enumerate(tiff_paths):
