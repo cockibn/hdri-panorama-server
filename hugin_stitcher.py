@@ -367,13 +367,11 @@ class CorrectHuginStitcher:
         crop_param = "--crop=NONE"
         logger.info(f"📐 FORCED full canvas mode: {self.canvas_size[0]}×{self.canvas_size[1]} (no cropping to prevent image loss)")
         
-        # Official pano_modify command for 360° spherical panorama
+        # Simplified pano_modify command - avoid parameter conflicts
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
-            crop_param,                                                # Crop mode
             "--projection=0",                                          # Equirectangular
-            "--fov=360",                                              # Force 360° horizontal coverage
             "-o", final_project,
             project_file
         ]
