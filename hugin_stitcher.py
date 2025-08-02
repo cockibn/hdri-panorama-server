@@ -316,8 +316,8 @@ class CorrectHuginStitcher:
         """Step 4: Optimize using autooptimiser with constrained parameters for ARKit positioning."""
         opt_project = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # Check if we should preserve ARKit positioning
-        preserve_arkit_positioning = os.environ.get('PRESERVE_ARKIT_POSITIONING', 'true').lower() == 'true'
+        # TEMPORARY: Disable ARKit positioning to test standard feature-based stitching
+        preserve_arkit_positioning = False  # Was: os.environ.get('PRESERVE_ARKIT_POSITIONING', 'true').lower() == 'true'
         
         if preserve_arkit_positioning and self._has_arkit_positioning(project_file):
             logger.info("🎯 Using constrained optimization to preserve ARKit positioning")
