@@ -363,12 +363,9 @@ class CorrectHuginStitcher:
         # Check for crop mode preference (AUTO removes black areas, NONE keeps full canvas)
         crop_mode = os.environ.get('PANORAMA_CROP_MODE', 'AUTO')
         
-        if crop_mode.upper() == 'NONE':
-            crop_param = "--crop=NONE"
-            logger.info(f"📐 Using full canvas mode: {self.canvas_size[0]}×{self.canvas_size[1]} (no cropping)")
-        else:
-            crop_param = "--crop=AUTO"
-            logger.info(f"📐 Using auto-crop mode: will crop to content area from {self.canvas_size[0]}×{self.canvas_size[1]} canvas")
+        # TEMPORARY: Force no cropping to prevent canvas cutting
+        crop_param = "--crop=NONE"
+        logger.info(f"📐 FORCED full canvas mode: {self.canvas_size[0]}×{self.canvas_size[1]} (no cropping to prevent image loss)")
         
         # Official pano_modify command for 360° spherical panorama
         cmd = [
