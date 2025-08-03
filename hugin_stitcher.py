@@ -599,27 +599,46 @@ class CorrectHuginStitcher:
         
         logger.info(f"🎨 Blending {len(tiff_files)} images with optimized enblend...")
         
-        # Fast enblend for large panoramas
+        # ULTRA-FAST enblend for 16 high-resolution images (6144×3072)
         cmd = [
             "enblend", 
             "-o", tiff_output,
-            "--levels=10",      # Much fewer levels for speed
+            "--levels=3",       # Minimal blending levels for speed
+            "--blend-colorspace=IDENTITY",  # Skip color space conversion
+            "--no-optimize",    # Skip optimization step
+            "-v",               # Verbose output for progress monitoring
         ] + tiff_files
         
+        logger.info(f"🚀 Starting ultra-fast enblend with {len(tiff_files)} images...")
+        logger.info(f"🚀 Estimated time: 2-5 minutes for {len(tiff_files)} high-resolution images")
+        logger.info(f"🚀 Command: {' '.join(cmd)}")
+        
+        # Log individual file sizes for progress estimation
+        total_size = 0
+        for i, tiff_file in enumerate(tiff_files):
+            size = os.path.getsize(tiff_file)
+            total_size += size
+            if i < 3:  # Log first 3 files
+                logger.info(f"📄 Input {i}: {size} bytes ({size/1024/1024:.1f} MB)")
+        logger.info(f"📊 Total input data: {total_size/1024/1024:.1f} MB")
+        
         try:
-            self._run_command(cmd, "enblend", timeout=600)  # 10 minute timeout for large panoramas
+            self._run_command(cmd, "enblend", timeout=300)  # 5 minute timeout for ultra-fast version
         except RuntimeError as e:
             if "timed out" in str(e):
-                # If timeout, try even faster settings
-                logger.warning("⚠️ Fast enblend timed out, trying ultra-fast version...")
-                ultrafast_cmd = [
+                # If timeout, try emergency speed settings
+                logger.warning("⚠️ Ultra-fast enblend timed out, trying emergency speed version...")
+                emergency_cmd = [
                     "enblend", 
                     "-o", tiff_output,
-                    "--levels=5"  # Minimal levels
+                    "--levels=1",   # Single level blending (fastest possible)
+                    "--blend-colorspace=IDENTITY",
+                    "--no-optimize",
+                    "-v"
                 ] + tiff_files
                 
                 try:
-                    self._run_command(ultrafast_cmd, "enblend", timeout=900)  # 15 minutes
+                    self._run_command(emergency_cmd, "enblend", timeout=600)  # 10 minutes for emergency version
                 except RuntimeError:
                     # Last resort: basic enblend with long timeout
                     logger.warning("⚠️ Ultra-fast enblend failed, trying basic version...")
