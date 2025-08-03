@@ -414,19 +414,23 @@ class CorrectHuginStitcher:
             logger.info("🔒 All 16 images should maintain their spherical distribution")
             
         else:
-            logger.info("🔄 Using FULL FEATURE-BASED optimization for highest quality results")
-            logger.info("🔄 This enables natural image alignment and distortion correction")
+            logger.info("🔄 Using FEATURE-BASED optimization with geometric constraints")
+            logger.info("🔄 This enables natural alignment while preventing extreme positioning")
             
-            # Standard optimization for non-ARKit projects
+            # RESEARCH-BASED: Constrained optimization to prevent out-of-bounds positioning
+            # Skip -a to prevent extreme pitch values (>90°) that cause nona to skip images
             cmd = [
                 "autooptimiser",
-                "-a",  # Optimize positions (yaw, pitch, roll)
+                # "-a" removed to prevent extreme repositioning
                 "-m",  # Optimize photometric parameters
                 "-l",  # Optimize lens parameters
                 "-s",  # Optimize exposure
                 "-o", opt_project,
                 project_file
             ]
+            
+            logger.info("🔒 Geometric positioning constrained to prevent out-of-bounds coordinates")
+            logger.info("🔒 This should ensure all 16 images render within valid spherical bounds")
         
         self._run_command(cmd, "autooptimiser")
         
@@ -696,9 +700,20 @@ class CorrectHuginStitcher:
                     basic_cmd = ["enblend", "-o", tiff_output] + tiff_files
                     self._run_command(basic_cmd, "enblend", timeout=1200)  # 20 minutes
             else:
-                # Non-timeout error, try basic version
-                logger.warning("⚠️ Fast enblend failed with error, trying basic version...")
-                basic_cmd = ["enblend", "-o", tiff_output] + tiff_files
+                # Non-timeout error, try dimension-safe basic version
+                logger.warning("⚠️ Fast enblend failed with error, trying dimension-safe basic version...")
+                
+                # RESEARCH-BASED: Use dimension-safe parameters for mixed sizes
+                basic_cmd = [
+                    "enblend", 
+                    "-o", tiff_output,
+                    "--fine-mask",      # Better handling of dimension differences
+                    "--wrap=both",      # Essential for 360° panoramas
+                    "--compression=LZW", # Reduce memory usage
+                    "-v"                # Verbose for debugging
+                ] + tiff_files
+                
+                logger.info(f"🔧 Fallback command: {' '.join(basic_cmd)}")
                 self._run_command(basic_cmd, "enblend", timeout=900)
         
         if not os.path.exists(tiff_output):
