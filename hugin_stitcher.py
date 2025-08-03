@@ -471,7 +471,7 @@ class CorrectHuginStitcher:
         return final_project
     
     def _force_spherical_fov(self, project_file: str):
-        """Force 360° field of view by directly editing PTO file."""
+        """Force 360° field of view and fix seam boundary issues."""
         try:
             with open(project_file, 'r') as f:
                 content = f.read()
@@ -480,13 +480,47 @@ class CorrectHuginStitcher:
             import re
             content = re.sub(r'p f0 w(\d+) h(\d+) v\d+', r'p f0 w\1 h\2 v360', content)
             
+            # CRITICAL FIX: Handle 180° seam boundary issue
+            # Find images positioned exactly at 180° and adjust them slightly to avoid wraparound problems
+            lines = content.split('\n')
+            modified_lines = []
+            
+            for line in lines:
+                if line.startswith('i '):
+                    # Check for yaw values exactly at 180° or -180° which cause seam issues
+                    parts = line.split()
+                    yaw_found = False
+                    
+                    for i, part in enumerate(parts):
+                        if part.startswith('y'):
+                            try:
+                                yaw_val = float(part[1:])
+                                # If yaw is exactly 180° or very close, adjust slightly to avoid seam wraparound issues
+                                if abs(yaw_val - 180.0) < 0.1 or abs(yaw_val + 180.0) < 0.1:
+                                    # Adjust 180° to 179.9° to avoid exact seam boundary
+                                    adjusted_yaw = 179.9 if yaw_val > 0 else -179.9
+                                    parts[i] = f'y{adjusted_yaw}'
+                                    logger.info(f"🔧 SEAM FIX: Adjusted yaw from {yaw_val}° to {adjusted_yaw}° to avoid 180° boundary")
+                                    yaw_found = True
+                                    break
+                            except ValueError:
+                                continue
+                    
+                    if yaw_found:
+                        line = ' '.join(parts)
+                
+                modified_lines.append(line)
+            
+            content = '\n'.join(modified_lines)
+            
             with open(project_file, 'w') as f:
                 f.write(content)
             
             logger.info("🔧 FORCED v360 field of view for full spherical panorama")
+            logger.info("🔧 Applied 180° seam boundary fixes for equirectangular wraparound")
             
         except Exception as e:
-            logger.warning(f"⚠️ Could not force spherical FOV: {e}")
+            logger.warning(f"⚠️ Could not force spherical FOV or fix seam boundaries: {e}")
     
     def _render_images(self, project_file: str) -> List[str]:
         """Step 6: Render images using nona."""
