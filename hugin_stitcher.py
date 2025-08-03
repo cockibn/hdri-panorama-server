@@ -342,9 +342,11 @@ class CorrectHuginStitcher:
         """Step 4: Optimize using autooptimiser with constrained parameters for ARKit positioning."""
         opt_project = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # CRITICAL FIX: DISABLE ARKit positioning to enable natural feature-based stitching
-        # Research shows ARKit "perfect positioning" prevents quality optimization
-        preserve_arkit_positioning = False  # Let Hugin optimize based on actual image features
+        # Configurable ARKit positioning mode (environment variable or default)
+        # False = full feature-based optimization (better quality, slower)
+        # True = preserve ARKit positioning (faster, may have quality issues)
+        preserve_arkit_positioning = os.environ.get("PRESERVE_ARKIT", "false").lower() == "true"
+        logger.info(f"🎯 ARKit positioning mode: {'PRESERVED' if preserve_arkit_positioning else 'FEATURE-BASED'}")
         
         if preserve_arkit_positioning and self._has_arkit_positioning(project_file):
             logger.info("🎯 Using constrained optimization to preserve ARKit positioning")
@@ -390,18 +392,17 @@ class CorrectHuginStitcher:
         """Step 5: Set output parameters using pano_modify."""
         final_project = os.path.join(self.temp_dir, "project_final.pto")
         
-        # Check for crop mode preference (AUTO removes black areas, NONE keeps full canvas)
-        crop_mode = os.environ.get('PANORAMA_CROP_MODE', 'AUTO')
+        # Respect crop mode preference (AUTO removes black areas, NONE keeps full canvas)
+        crop_mode = os.environ.get('PANORAMA_CROP_MODE', 'AUTO').upper()
+        crop_arg = f"--crop={crop_mode}"
+        logger.info(f"📐 Crop mode: {crop_mode} | Canvas: {self.canvas_size[0]}×{self.canvas_size[1]}")
         
-        # TEMPORARY: Force no cropping to prevent canvas cutting
-        crop_param = "--crop=NONE"
-        logger.info(f"📐 FORCED full canvas mode: {self.canvas_size[0]}×{self.canvas_size[1]} (no cropping to prevent image loss)")
-        
-        # Simplified pano_modify command - avoid parameter conflicts
+        # Complete pano_modify command with proper crop mode
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
             "--projection=0",                                          # Equirectangular
+            crop_arg,                                                  # Respect crop mode setting
             "-o", final_project,
             project_file
         ]
@@ -606,6 +607,7 @@ class CorrectHuginStitcher:
             "--levels=3",       # Minimal blending levels for speed
             "--blend-colorspace=IDENTITY",  # Skip color space conversion
             "--no-optimize",    # Skip optimization step
+            "--wrap=both",      # Handle 360° seam wrapping for equirectangular
             "-v",               # Verbose output for progress monitoring
         ] + tiff_files
         
