@@ -316,8 +316,8 @@ class CorrectHuginStitcher:
         """Step 4: Optimize using autooptimiser with constrained parameters for ARKit positioning."""
         opt_project = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # TEMPORARY: Disable ARKit positioning to test standard feature-based stitching
-        preserve_arkit_positioning = False  # Was: os.environ.get('PRESERVE_ARKIT_POSITIONING', 'true').lower() == 'true'
+        # CRITICAL FIX: ENABLE ARKit positioning preservation to prevent image clustering
+        preserve_arkit_positioning = True  # MUST preserve our perfect spherical distribution
         
         if preserve_arkit_positioning and self._has_arkit_positioning(project_file):
             logger.info("🎯 Using constrained optimization to preserve ARKit positioning")
@@ -332,7 +332,9 @@ class CorrectHuginStitcher:
                 project_file
             ]
             
-            logger.info("🔒 Preserving ARKit yaw/pitch positions, optimizing photometrics only")
+            logger.info("🔒 CONSTRAINED OPTIMIZATION: Preserving ARKit yaw/pitch positions, optimizing photometrics only")
+            logger.info("🔒 This prevents autooptimiser from clustering images together")
+            logger.info("🔒 All 16 images should maintain their spherical distribution")
             
         else:
             logger.info("🔄 Using standard optimization (no ARKit positioning detected)")
