@@ -458,12 +458,14 @@ class CorrectHuginStitcher:
         except Exception as e:
             logger.warning(f"⚠️ Could not analyze final PTO file: {e}")
         
-        # COMPREHENSIVE DEBUG: Log exact nona command before execution
-        cmd = ["nona", "-m", "TIFF", "-o", output_prefix, project_file]
+        # CRITICAL FIX: Use TIFF_m to create multiple individual files instead of single composite
+        # TIFF = single blended file, TIFF_m = multiple files (rendered0000.tif, rendered0001.tif, etc.)
+        cmd = ["nona", "-m", "TIFF_m", "-o", output_prefix, project_file]
         logger.info(f"🚀 EXECUTING NONA COMMAND: {' '.join(cmd)}")
         logger.info(f"🚀 Output prefix: {output_prefix}")
         logger.info(f"🚀 Project file: {project_file}")
-        logger.info(f"🚀 Expected output pattern: {output_prefix}*.tif")
+        logger.info(f"🚀 Expected output pattern: {output_prefix}0000.tif, {output_prefix}0001.tif, etc. (16 files)")
+        logger.info(f"🚀 Using TIFF_m format for individual image rendering (not composite)")
         
         # Check canvas bounds before nona
         try:
@@ -509,7 +511,7 @@ class CorrectHuginStitcher:
             # Try to run nona with verbose output to get more details
             try:
                 logger.info("🔧 DEBUGGING: Testing nona with verbose output...")
-                debug_cmd = ["nona", "-v", "-m", "TIFF", "-o", f"{output_prefix}_debug", project_file]
+                debug_cmd = ["nona", "-v", "-m", "TIFF_m", "-o", f"{output_prefix}_debug", project_file]
                 import subprocess
                 debug_result = subprocess.run(debug_cmd, capture_output=True, text=True, timeout=60)
                 logger.info(f"🔧 Debug nona return code: {debug_result.returncode}")
