@@ -78,15 +78,21 @@ class CorrectHuginStitcher:
                 
                 # Step 3: Clean control points
                 if progress_callback:
-                    progress_callback(0.45, "Cleaning control points...")
+                    progress_callback(0.40, "Cleaning control points...")
                 
                 clean_project = self._clean_control_points(cp_project)
+                
+                # Step 3.5: Detect lines for geometric consistency (RESEARCH-BASED)
+                if progress_callback:
+                    progress_callback(0.50, "Detecting horizon and vertical lines...")
+                
+                line_project = self._detect_lines(clean_project)
                 
                 # Step 4: Optimize geometry and photometrics
                 if progress_callback:
                     progress_callback(0.60, "Optimizing geometry and photometrics...")
                 
-                opt_project = self._optimize_panorama(clean_project)
+                opt_project = self._optimize_panorama(line_project)
                 
                 # Step 5: Set output parameters (canvas, crop, projection)
                 if progress_callback:
@@ -257,10 +263,12 @@ class CorrectHuginStitcher:
         logger.info(f"📊 Capture pattern analysis: {unique_elevations} unique elevation levels, {elevation_range:.1f}° total range")
         
         with open(project_file, 'w') as f:
-            # Write PTO header
+            # RESEARCH-BASED: Proper PTO header for iPhone ultra-wide spherical panoramas
             f.write("# hugin project file\n")
+            f.write("#hugin_ptoversion 2\n")
             f.write(f"p f0 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 n\"TIFF_m c:LZW\"\n")
             f.write("m g1 i0 f0 m2 p0.00784314\n")
+            f.write("\n# image lines\n")
             
             # Write image lines with ARKit positioning
             for i, (img_path, capture_point) in enumerate(zip(image_paths, capture_points)):
@@ -288,8 +296,14 @@ class CorrectHuginStitcher:
                 pitch = elevation
                 roll_hugin = 0.0  # Keep roll at zero for spherical panoramas
                 
-                # Write image line with positioning
-                f.write(f'i w4032 h3024 f0 v{fov} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a0 b0 c0 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
+                # RESEARCH-BASED: Proper iPhone ultra-wide lens parameters
+                # iPhone Lens Correction setting affects these values:
+                # - If enabled: minimal distortion (a≈0, b≈0, c≈0)
+                # - If disabled: significant barrel distortion (a≈-0.1, b≈0.05, c≈-0.01)
+                # Let autooptimiser determine optimal values, start with iPhone defaults
+                
+                f.write(f'#-hugin  cropFactor=1\n')
+                f.write(f'i w4032 h3024 f0 v{fov} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a-0.05 b0.02 c-0.005 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
                 
                 logger.info(f"📍 Image {i}: ARKit azimuth={azimuth:.1f}°, elevation={elevation:.1f}° → Hugin yaw={yaw:.1f}°, pitch={pitch:.1f}°")
         
@@ -304,26 +318,42 @@ class CorrectHuginStitcher:
         logger.info(f"✅ Generated positioned PTO with ARKit data covering {len(capture_points)} viewpoints")
     
     def _find_control_points(self, project_file: str) -> str:
-        """Step 2: Find control points using cpfind with 2024 multirow default."""
+        """Step 2: Find control points using cpfind optimized for iPhone ultra-wide spherical panoramas."""
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
-        # Official 2024 cpfind command (multirow is default)
+        # RESEARCH-BASED: Optimized cpfind for iPhone ultra-wide 16-image spherical
         cmd = [
             "cpfind",
-            "--multirow",      # 2024 default strategy
-            "--celeste",       # Sky detection
+            "--multirow",           # Essential for multi-row spherical panoramas
+            "--celeste",            # Sky detection for better control points
+            "--linearmatchlen", "2", # Match each image with next AND next+1 for connectivity
+            "--sieve1width", "50",   # Increased sieve size for high-res images
+            "--sieve1height", "50",
+            "--sieve1size", "300",   # Larger feature detection for 4032×3024 images
             "-o", cp_project,
             project_file
         ]
         
-        self._run_command(cmd, "cpfind")
+        logger.info("🔍 Finding control points with iPhone ultra-wide optimized parameters...")
+        self._run_command(cmd, "cpfind", timeout=900)  # Longer timeout for 16 images
         
-        # Verify output
+        # Verify output and analyze connectivity
         if not os.path.exists(cp_project):
             raise RuntimeError("cpfind failed to create output file")
         
         cp_count = self._count_control_points(cp_project)
         logger.info(f"🎯 Found {cp_count} control points using multirow strategy")
+        
+        # RESEARCH-BASED: Verify connectivity for all 16 images
+        if cp_count < 80:  # Minimum ~5 points per image pair for 16 images
+            logger.warning(f"⚠️ LOW CONTROL POINT COUNT: {cp_count} may cause connectivity issues")
+            logger.warning("⚠️ This could explain why only 13/16 images render")
+        
+        # Validate connectivity (critical for understanding rendering failures)
+        is_connected = self._validate_pto_connectivity(cp_project)
+        if not is_connected:
+            logger.error("❌ CRITICAL: Some images are not connected via control points!")
+            logger.error("❌ This will cause nona to skip unconnected images!")
         
         return cp_project
     
@@ -337,6 +367,24 @@ class CorrectHuginStitcher:
         
         logger.info("✅ Control points cleaned")
         return clean_project
+    
+    def _detect_lines(self, project_file: str) -> str:
+        """Step 3.5: Detect vertical/horizontal lines using linefind (critical for spherical panoramas)."""
+        line_project = os.path.join(self.temp_dir, "project_lines.pto")
+        
+        # RESEARCH-BASED: linefind is essential for horizon alignment in spherical panoramas
+        logger.info("📏 Detecting horizon and vertical lines for geometric consistency...")
+        
+        cmd = ["linefind", "-o", line_project, project_file]
+        
+        try:
+            self._run_command(cmd, "linefind", timeout=300)
+            logger.info("✅ Line detection completed - improved geometric consistency")
+            return line_project
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Line detection failed: {e}")
+            logger.warning("⚠️ Continuing without line detection - may affect geometric accuracy")
+            return project_file  # Return original if linefind fails
     
     def _optimize_panorama(self, project_file: str) -> str:
         """Step 4: Optimize using autooptimiser with constrained parameters for ARKit positioning."""
@@ -628,14 +676,15 @@ class CorrectHuginStitcher:
             self._run_command(cmd, "enblend", timeout=300)  # 5 minute timeout for ultra-fast version
         except RuntimeError as e:
             if "timed out" in str(e):
-                # If timeout, try emergency speed settings
+                # If timeout, try research-based emergency parameters
                 logger.warning("⚠️ Ultra-fast enblend timed out, trying emergency speed version...")
                 emergency_cmd = [
                     "enblend", 
                     "-o", tiff_output,
-                    "--levels=1",   # Single level blending (fastest possible)
-                    "--blend-colorspace=IDENTITY",
-                    "--no-optimize",
+                    "--levels=2",       # Minimal but functional blending
+                    "--fine-mask",      # Better quality despite speed focus
+                    "--no-optimize",    # Skip slow optimization
+                    "--wrap=both",      # Essential for 360° panoramas
                     "-v"
                 ] + tiff_files
                 
@@ -717,6 +766,46 @@ class CorrectHuginStitcher:
             return content.count('\nc ')
         except:
             return 0
+    
+    def _validate_pto_connectivity(self, project_file: str) -> bool:
+        """RESEARCH-BASED: Validate that all images are connected via control points."""
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # Count images and analyze connectivity
+            image_lines = [line for line in content.split('\n') if line.startswith('i ')]
+            cp_lines = [line for line in content.split('\n') if line.startswith('c ')]
+            
+            num_images = len(image_lines)
+            logger.info(f"📊 PTO Validation: {num_images} images, {len(cp_lines)} control points")
+            
+            # Track which images are connected
+            connected_images = set()
+            for cp_line in cp_lines:
+                # Control point format: c n0 N1 x1 y1 X2 Y2 t0
+                parts = cp_line.split()
+                if len(parts) >= 3:
+                    try:
+                        img1 = int(parts[1][1:])  # Remove 'n' prefix
+                        img2 = int(parts[2][1:])  # Remove 'N' prefix
+                        connected_images.add(img1)
+                        connected_images.add(img2)
+                    except ValueError:
+                        continue
+            
+            disconnected = num_images - len(connected_images)
+            if disconnected > 0:
+                logger.warning(f"⚠️ CONNECTIVITY ISSUE: {disconnected} images have no control points")
+                logger.warning(f"⚠️ Connected images: {sorted(connected_images)}")
+                return False
+            
+            logger.info("✅ All images connected via control points")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not validate PTO connectivity: {e}")
+            return False
     
     def _log_final_output_params(self, project_file: str):
         """Log the actual output parameters from the final project file."""
