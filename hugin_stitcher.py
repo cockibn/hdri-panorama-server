@@ -210,10 +210,36 @@ class CorrectHuginStitcher:
         # iPhone ultra-wide camera parameters (106.2° FOV measured)
         fov = 106.2
         
-        # Analyze ARKit positioning data distribution
+        # CRITICAL DEBUG: Analyze ARKit positioning data in detail
         azimuths = [cp.get('azimuth', 0.0) for cp in capture_points]
         elevations = [cp.get('elevation', 0.0) for cp in capture_points]
+        
         logger.info(f"📊 ARKit data ranges - Azimuth: {min(azimuths):.1f}° to {max(azimuths):.1f}°, Elevation: {min(elevations):.1f}° to {max(elevations):.1f}°")
+        
+        # Log EVERY single coordinate to identify problematic data
+        logger.info(f"🔍 COMPLETE ARKit positioning data:")
+        for i, cp in enumerate(capture_points):
+            azimuth = cp.get('azimuth', 0.0)
+            elevation = cp.get('elevation', 0.0)
+            position = cp.get('position', [0.0, 0.0, 0.0])
+            logger.info(f"🔍 Image {i:2d}: azimuth={azimuth:7.2f}°, elevation={elevation:6.2f}°, pos=[{position[0]:6.2f}, {position[1]:6.2f}, {position[2]:6.2f}]")
+        
+        # Check for problematic patterns
+        zero_positions = sum(1 for cp in capture_points if cp.get('azimuth', 0.0) == 0.0 and cp.get('elevation', 0.0) == 0.0)
+        if zero_positions > 1:
+            logger.warning(f"⚠️ FOUND {zero_positions} images at origin (0°, 0°) - this will cause overlapping/glitchy output")
+        
+        # Check for invalid elevations (outside -90° to +90°)
+        invalid_elevations = [e for e in elevations if e < -90 or e > 90]
+        if invalid_elevations:
+            logger.warning(f"⚠️ FOUND invalid elevations outside ±90°: {invalid_elevations}")
+            
+        # Check for azimuth clustering
+        azimuth_groups = {}
+        for az in azimuths:
+            key = round(az / 45) * 45  # Group by 45° intervals
+            azimuth_groups[key] = azimuth_groups.get(key, 0) + 1
+        logger.info(f"📊 Azimuth distribution by 45° groups: {azimuth_groups}")
         
         # Check for spherical distribution
         elevation_range = max(elevations) - min(elevations)
@@ -316,8 +342,9 @@ class CorrectHuginStitcher:
         """Step 4: Optimize using autooptimiser with constrained parameters for ARKit positioning."""
         opt_project = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # CRITICAL FIX: ENABLE ARKit positioning preservation to prevent image clustering
-        preserve_arkit_positioning = True  # MUST preserve our perfect spherical distribution
+        # CRITICAL FIX: DISABLE ARKit positioning to enable natural feature-based stitching
+        # Research shows ARKit "perfect positioning" prevents quality optimization
+        preserve_arkit_positioning = False  # Let Hugin optimize based on actual image features
         
         if preserve_arkit_positioning and self._has_arkit_positioning(project_file):
             logger.info("🎯 Using constrained optimization to preserve ARKit positioning")
@@ -337,7 +364,8 @@ class CorrectHuginStitcher:
             logger.info("🔒 All 16 images should maintain their spherical distribution")
             
         else:
-            logger.info("🔄 Using standard optimization (no ARKit positioning detected)")
+            logger.info("🔄 Using FULL FEATURE-BASED optimization for highest quality results")
+            logger.info("🔄 This enables natural image alignment and distortion correction")
             
             # Standard optimization for non-ARKit projects
             cmd = [
