@@ -723,7 +723,19 @@ class CorrectHuginStitcher:
                 continue
         
         if not success:
-            raise RuntimeError(f"All {len(strategies)} enblend strategies failed - images may have insufficient overlap or geometric issues")
+            # EMERGENCY FALLBACK: Use OpenCV simple blending when enblend fails completely
+            logger.warning("⚠️ All enblend strategies failed - attempting emergency OpenCV blending...")
+            logger.warning("⚠️ This will produce lower quality output but may recover the panorama")
+            
+            try:
+                success = self._emergency_opencv_blend(tiff_files, tiff_output)
+                if success:
+                    logger.info("✅ Emergency OpenCV blending succeeded - panorama recovered!")
+                else:
+                    raise RuntimeError(f"All {len(strategies)} enblend strategies + emergency OpenCV blending failed")
+            except Exception as e:
+                logger.error(f"❌ Emergency OpenCV blending also failed: {e}")
+                raise RuntimeError(f"All {len(strategies)} enblend strategies + emergency OpenCV blending failed - images may have insufficient overlap or geometric issues")
         
         if not os.path.exists(tiff_output):
             raise RuntimeError("enblend failed to create final panorama")
@@ -756,6 +768,76 @@ class CorrectHuginStitcher:
         logger.info(f"🌟 EXR conversion complete - output: {exr_size} bytes")
         
         return exr_output
+    
+    def _emergency_opencv_blend(self, tiff_files: List[str], output_path: str) -> bool:
+        """Emergency fallback: Simple OpenCV blending when enblend fails completely."""
+        try:
+            logger.info("🚨 Starting emergency OpenCV blending (simple averaging method)")
+            
+            # Load all images
+            images = []
+            for tiff_file in tiff_files:
+                img = cv2.imread(tiff_file, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    images.append(img.astype(np.float32))
+                    logger.debug(f"📄 Loaded {tiff_file}: {img.shape}")
+                else:
+                    logger.warning(f"⚠️ Could not load {tiff_file}")
+            
+            if len(images) < 2:
+                logger.error("❌ Need at least 2 images for emergency blending")
+                return False
+            
+            # Get canvas size from first image
+            canvas_height, canvas_width = images[0].shape[:2]
+            logger.info(f"📐 Canvas size: {canvas_width}×{canvas_height}")
+            
+            # Simple averaging blend (better than nothing)
+            logger.info("🔄 Computing simple average blend...")
+            blended = np.zeros_like(images[0])
+            pixel_count = np.zeros((canvas_height, canvas_width), dtype=np.float32)
+            
+            for i, img in enumerate(images):
+                # Create mask for non-black pixels (assuming black = no data)
+                if len(img.shape) == 3:
+                    mask = np.any(img > 0, axis=2).astype(np.float32)
+                else:
+                    mask = (img > 0).astype(np.float32)
+                
+                # Add to blend
+                blended += img * mask[..., np.newaxis] if len(img.shape) == 3 else img * mask
+                pixel_count += mask
+                
+                logger.debug(f"📄 Blended image {i+1}/{len(images)}")
+            
+            # Avoid division by zero
+            pixel_count = np.maximum(pixel_count, 1.0)
+            
+            # Compute average
+            if len(blended.shape) == 3:
+                blended = blended / pixel_count[..., np.newaxis]
+            else:
+                blended = blended / pixel_count
+            
+            # Convert back to appropriate type
+            if blended.dtype == np.float32:
+                # Keep as float32 for high quality, but clamp to reasonable range
+                blended = np.clip(blended, 0, 65535)  # 16-bit range
+            
+            # Save result
+            cv2.imwrite(output_path, blended.astype(np.uint16))
+            
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                logger.info(f"✅ Emergency OpenCV blend saved: {size_mb:.1f} MB")
+                return True
+            else:
+                logger.error("❌ Emergency blend produced no output")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Emergency OpenCV blending failed: {e}")
+            return False
     
     def _run_command(self, cmd: List[str], tool_name: str, timeout: int = 300):
         """Run Hugin command with error handling."""
