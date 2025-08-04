@@ -558,17 +558,22 @@ class CorrectHuginStitcher:
         """Step 5: Set output parameters using pano_modify."""
         final_project = os.path.join(self.temp_dir, "project_final.pto")
         
-        # Respect crop mode preference (AUTO removes black areas, NONE keeps full canvas)
-        crop_mode = os.environ.get('PANORAMA_CROP_MODE', 'AUTO').upper()
+        # CRITICAL FIX: Force NONE crop mode for proper 360° photospheres
+        # AUTO crop destroys the 2:1 aspect ratio required for equirectangular panoramas
+        crop_mode = "NONE"  # Always use NONE for proper 360° photospheres
         crop_arg = f"--crop={crop_mode}"
-        logger.info(f"📐 Crop mode: {crop_mode} | Canvas: {self.canvas_size[0]}×{self.canvas_size[1]}")
         
-        # Complete pano_modify command with proper crop mode
+        logger.info(f"📐 FORCED Crop mode: {crop_mode} (required for 360° photospheres)")
+        logger.info(f"📐 Canvas: {self.canvas_size[0]}×{self.canvas_size[1]} (2:1 aspect ratio)")
+        logger.warning("⚠️ Using NONE crop to preserve proper equirectangular 2:1 aspect ratio")
+        logger.warning("⚠️ AUTO crop destroys 360° photosphere compatibility")
+        
+        # Complete pano_modify command with forced NONE crop mode
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
             "--projection=0",                                          # Equirectangular
-            crop_arg,                                                  # Respect crop mode setting
+            crop_arg,                                                  # Force NONE crop
             "-o", final_project,
             project_file
         ]

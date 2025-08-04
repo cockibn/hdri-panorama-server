@@ -238,6 +238,18 @@ class PanoramaProcessor:
             output_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
             preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
             
+            # Validate 360° photosphere dimensions before saving
+            height, width = panorama.shape[:2]
+            aspect_ratio = width / height
+            logger.info(f"📊 Panorama dimensions: {width}×{height}, aspect ratio: {aspect_ratio:.2f}")
+            
+            if abs(aspect_ratio - 2.0) > 0.1:  # Should be 2:1 for equirectangular
+                logger.error(f"❌ INVALID ASPECT RATIO: {aspect_ratio:.2f} (should be 2.0 for 360° photospheres)")
+                logger.error("❌ This panorama will NOT display correctly in 360° viewers!")
+                logger.error("❌ Check crop mode settings - AUTO crop destroys photosphere compatibility")
+            else:
+                logger.info("✅ Valid 2:1 aspect ratio for 360° photosphere")
+            
             # Save as EXR for HDR panorama with full dynamic range (as requested)
             # Ensure panorama is in float32 format for EXR encoding
             if panorama.dtype != np.float32:
@@ -252,11 +264,52 @@ class PanoramaProcessor:
             cv2.imwrite(str(output_path), panorama, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
             logger.info(f"📁 EXR file saved successfully: {output_path.stat().st_size / (1024*1024):.1f}MB")
             
-            # Also create JPEG preview for web viewing (tone-mapped from HDR)
+            # Create JPEG preview with 360° photosphere metadata
             # Convert float32 HDR data to uint8 for JPEG preview
             panorama_preview = (np.clip(panorama, 0, 1) * 255).astype(np.uint8)
             result_rgb = cv2.cvtColor(panorama_preview, cv2.COLOR_BGR2RGB)
-            Image.fromarray(result_rgb).save(str(preview_path), 'JPEG', quality=85, optimize=True)
+            
+            # Save JPEG with proper 360° photosphere metadata
+            pil_image = Image.fromarray(result_rgb)
+            
+            # Add Google Photosphere XMP metadata for 360° viewer compatibility
+            import piexif
+            exif_dict = {
+                "0th": {
+                    piexif.ImageIFD.Make: "HDRi 360 Studio",
+                    piexif.ImageIFD.Model: "iPhone Ultra-Wide Panorama",
+                    piexif.ImageIFD.Software: "Hugin Professional Pipeline",
+                    piexif.ImageIFD.ImageDescription: "Equirectangular 360° Photosphere"
+                }
+            }
+            
+            # Add photosphere-specific metadata
+            xmp_photosphere = f"""<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/">
+   <GPano:ProjectionType>equirectangular</GPano:ProjectionType>
+   <GPano:UsePanoramaViewer>True</GPano:UsePanoramaViewer>
+   <GPano:CroppedAreaImageWidthPixels>{width}</GPano:CroppedAreaImageWidthPixels>
+   <GPano:CroppedAreaImageHeightPixels>{height}</GPano:CroppedAreaImageHeightPixels>
+   <GPano:FullPanoWidthPixels>{width}</GPano:FullPanoWidthPixels>
+   <GPano:FullPanoHeightPixels>{height}</GPano:FullPanoHeightPixels>
+   <GPano:CroppedAreaLeftPixels>0</GPano:CroppedAreaLeftPixels>
+   <GPano:CroppedAreaTopPixels>0</GPano:CroppedAreaTopPixels>
+   <GPano:PoseHeadingDegrees>0</GPano:PoseHeadingDegrees>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"""
+            
+            try:
+                exif_bytes = piexif.dump(exif_dict)
+                pil_image.save(str(preview_path), 'JPEG', quality=85, optimize=True, exif=exif_bytes)
+                logger.info("📱 JPEG preview saved with 360° photosphere metadata")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not add photosphere metadata: {e}")
+                pil_image.save(str(preview_path), 'JPEG', quality=85, optimize=True)
+                logger.info("📱 JPEG preview saved without metadata")
             
             base_url = os.environ.get('BASE_URL', 'https://hdri-panorama-server-production.up.railway.app').rstrip('/')
             result_url = f"{base_url}/v1/panorama/result/{job_id}"
