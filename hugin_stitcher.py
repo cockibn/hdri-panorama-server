@@ -332,8 +332,8 @@ class CorrectHuginStitcher:
         """Step 2: Find control points using cpfind optimized for iPhone ultra-wide spherical panoramas."""
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
-        # RESEARCH-BASED: Optimized cpfind for iPhone ultra-wide 16-image spherical
-        cmd = [
+        # Try advanced research-based flags first, fallback to basic if unsupported
+        advanced_cmd = [
             "cpfind",
             "--multirow",           # Essential for multi-row spherical panoramas
             "--celeste",            # Sky detection for better control points
@@ -347,10 +347,34 @@ class CorrectHuginStitcher:
             project_file
         ]
         
-        logger.info("🔍 Finding control points with ARKit-guided prealigned matching...")
-        logger.info("🔍 Using --prealigned to leverage ARKit poses for intelligent pairing")
-        logger.info("🔍 Using --fullscale for maximum ultra-wide edge detail extraction")
-        self._run_command(cmd, "cpfind", timeout=900)  # Longer timeout for 16 images
+        # Fallback command without new flags
+        basic_cmd = [
+            "cpfind",
+            "--multirow",           # Essential for multi-row spherical panoramas
+            "--celeste",            # Sky detection for better control points
+            "--linearmatchlen", "2", # Match each image with next AND next+1 for connectivity
+            "--sieve1width", "50",   # Increased sieve size for high-res images
+            "--sieve1height", "50",
+            "--sieve1size", "300",   # Larger feature detection for 4032×3024 images
+            "-o", cp_project,
+            project_file
+        ]
+        
+        # Try advanced version first
+        logger.info("🔍 Attempting advanced cpfind with --prealigned and --fullscale...")
+        try:
+            self._run_command(advanced_cmd, "cpfind (advanced)", timeout=900)
+            logger.info("✅ Advanced cpfind successful - using ARKit-guided matching")
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Advanced cpfind failed: {e}")
+            logger.info("🔄 Falling back to basic cpfind without new flags...")
+            
+            # Remove any partial output
+            if os.path.exists(cp_project):
+                os.remove(cp_project)
+            
+            # Try basic version
+            self._run_command(basic_cmd, "cpfind (basic)", timeout=900)
         
         # Verify output and analyze connectivity
         if not os.path.exists(cp_project):
@@ -839,7 +863,8 @@ class CorrectHuginStitcher:
     
     def _run_command(self, cmd: List[str], tool_name: str, timeout: int = 300):
         """Run Hugin command with error handling."""
-        logger.debug(f"🔧 Running {tool_name}: {' '.join(cmd)}")
+        cmd_str = ' '.join(cmd)
+        logger.info(f"🔧 Running {tool_name}: {cmd_str}")
         
         try:
             result = subprocess.run(
@@ -850,12 +875,17 @@ class CorrectHuginStitcher:
                 check=True,
                 cwd=self.temp_dir
             )
+            if result.stdout:
+                logger.debug(f"📄 {tool_name} stdout: {result.stdout[:500]}")
             return result.stdout, result.stderr
             
         except subprocess.CalledProcessError as e:
             error_msg = f"{tool_name} failed (return code {e.returncode})"
             if e.stderr:
-                error_msg += f": {e.stderr[:200]}"
+                error_msg += f"\nSTDERR: {e.stderr[:500]}"
+            if e.stdout:
+                error_msg += f"\nSTDOUT: {e.stdout[:500]}"
+            error_msg += f"\nCOMMAND: {cmd_str}"
             logger.error(f"❌ {error_msg}")
             raise RuntimeError(error_msg)
         
