@@ -529,23 +529,45 @@ class CorrectHuginStitcher:
             return project_file  # Return original if linefind fails
     
     def _optimize_panorama(self, project_file: str) -> str:
-        """Step 4: Optimize using official autooptimiser workflow."""
+        """Step 4: Optimize using ARKit-aware strategy to prevent clustering."""
         opt_project = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # OFFICIAL HUGIN WORKFLOW: Standard autooptimiser command
-        cmd = [
-            "autooptimiser",
-            "-a",  # Auto align mode (position optimization)
-            "-m",  # Photometric optimization
-            "-l",  # Level horizon
-            "-s",  # Select optimal projection/size
-            "-o", opt_project,
-            project_file
-        ]
+        # Check if we have ARKit positioning data
+        has_arkit = self._has_arkit_positioning(project_file)
         
-        logger.info("🔍 Running official autooptimiser workflow...")
-        logger.info("📋 Command: autooptimiser -a -m -l -s -o project_opt.pto project_clean.pto")
-        logger.info("📋 This performs the same operation as hugin's 'Align' button")
+        if has_arkit:
+            logger.info("🎯 Detected ARKit positioning - using conservative optimization")
+            logger.warning("⚠️ ARKit provides accurate positions - limiting optimization to prevent clustering")
+            
+            # Conservative optimization for ARKit data
+            # Only optimize photometrics and minor geometric adjustments
+            cmd = [
+                "autooptimiser",
+                "-m",  # Photometric optimization only
+                "-l",  # Level horizon
+                "-o", opt_project,
+                project_file
+            ]
+            
+            logger.info("📋 Command: autooptimiser -m -l (conservative for ARKit)")
+            logger.info("📋 Skipping position optimization (-a) to preserve ARKit accuracy")
+            
+        else:
+            logger.info("🔍 No ARKit positioning - using full optimization")
+            
+            # Full optimization for non-ARKit data
+            cmd = [
+                "autooptimiser",
+                "-a",  # Auto align mode (position optimization)
+                "-m",  # Photometric optimization
+                "-l",  # Level horizon
+                "-s",  # Select optimal projection/size
+                "-o", opt_project,
+                project_file
+            ]
+            
+            logger.info("📋 Command: autooptimiser -a -m -l -s (full optimization)")
+        
         self._run_command(cmd, "autooptimiser")
         
         # Verify optimization didn't cluster images
@@ -558,22 +580,19 @@ class CorrectHuginStitcher:
         """Step 5: Set output parameters using pano_modify."""
         final_project = os.path.join(self.temp_dir, "project_final.pto")
         
-        # CRITICAL FIX: Force NONE crop mode for proper 360° photospheres
-        # AUTO crop destroys the 2:1 aspect ratio required for equirectangular panoramas
-        crop_mode = "NONE"  # Always use NONE for proper 360° photospheres
-        crop_arg = f"--crop={crop_mode}"
+        # CRITICAL FIX: Set proper canvas without crop mode for 360° photospheres
+        # pano_modify doesn't accept --crop=NONE, so we omit crop parameter entirely
+        # This preserves the full canvas without auto-cropping
         
-        logger.info(f"📐 FORCED Crop mode: {crop_mode} (required for 360° photospheres)")
         logger.info(f"📐 Canvas: {self.canvas_size[0]}×{self.canvas_size[1]} (2:1 aspect ratio)")
-        logger.warning("⚠️ Using NONE crop to preserve proper equirectangular 2:1 aspect ratio")
-        logger.warning("⚠️ AUTO crop destroys 360° photosphere compatibility")
+        logger.info("📐 No crop parameter - preserves full equirectangular canvas")
+        logger.warning("⚠️ Omitting crop to preserve proper 360° photosphere dimensions")
         
-        # Complete pano_modify command with forced NONE crop mode
+        # Complete pano_modify command without crop parameter (preserves full canvas)
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
             "--projection=0",                                          # Equirectangular
-            crop_arg,                                                  # Force NONE crop
             "-o", final_project,
             project_file
         ]
