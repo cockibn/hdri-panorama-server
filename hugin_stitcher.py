@@ -33,15 +33,19 @@ class CorrectHuginStitcher:
         
         self.canvas_size = self.resolutions.get(output_resolution, self.resolutions["6K"])
         logger.info(f"🎨 Hugin stitcher initialized: {self.canvas_size[0]}×{self.canvas_size[1]}")
-        logger.info("🔬 RESEARCH-BASED CRITICAL IMPROVEMENTS ACTIVE:")
-        logger.info("  ✅ --prealigned: ARKit poses guide intelligent control point matching")
-        logger.info("  ✅ --fullscale: Maximum ultra-wide edge detail extraction")  
-        logger.info("  ✅ geocpset --each-overlap: Guaranteed connectivity for all 16 images")
-        logger.info("🎯 Target: 16/16 image rendering (up from 15/16)")
+        logger.info("📋 OFFICIAL HUGIN CLI WORKFLOW ACTIVE:")
+        logger.info("  ✅ pto_gen: Generate project file")
+        logger.info("  ✅ cpfind --multirow --celeste: Find control points") 
+        logger.info("  ✅ cpclean: Clean control points")
+        logger.info("  ✅ autooptimiser -a -m -l -s: Optimize geometry & photometrics")
+        logger.info("  ✅ pano_modify --canvas=AUTO --crop=AUTO: Set output parameters")
+        logger.info("  ✅ nona -m TIFF_m: Render images")
+        logger.info("  ✅ enblend --wrap=horizontal: Blend final panorama")
+        logger.info("🎯 Deterministic, linear workflow for consistent results")
     
     def _verify_hugin_installation(self):
         """Verify required Hugin tools are available."""
-        required_tools = ['pto_gen', 'cpfind', 'geocpset', 'cpclean', 'linefind', 'autooptimiser', 'pano_modify', 'nona', 'enblend']
+        required_tools = ['pto_gen', 'cpfind', 'cpclean', 'linefind', 'autooptimiser', 'pano_modify', 'nona', 'enblend']
         
         for tool in required_tools:
             try:
@@ -74,24 +78,18 @@ class CorrectHuginStitcher:
                 
                 project_file = self._generate_project_file(image_paths, capture_points)
                 
-                # Step 2: Find control points (2024 multirow default)
+                # Step 2: Find control points (Official Hugin workflow)
                 if progress_callback:
-                    progress_callback(0.30, "Finding control points with multirow strategy...")
+                    progress_callback(0.30, "Finding control points...")
                 
                 cp_project = self._find_control_points(project_file)
                 self.control_points_found = self._count_control_points(cp_project)
                 
-                # Step 2.5: Add geometric control points for disconnected images (CRITICAL)
-                if progress_callback:
-                    progress_callback(0.35, "Adding geometric control points for connectivity...")
-                
-                geo_project = self._add_geometric_control_points(cp_project)
-                
-                # Step 3: Clean control points
+                # Step 3: Clean control points (Official Hugin workflow)
                 if progress_callback:
                     progress_callback(0.40, "Cleaning control points...")
                 
-                clean_project = self._clean_control_points(geo_project)
+                clean_project = self._clean_control_points(cp_project)
                 
                 # Step 3.5: Detect lines for geometric consistency (RESEARCH-BASED)
                 if progress_callback:
@@ -329,52 +327,21 @@ class CorrectHuginStitcher:
         logger.info(f"✅ Generated positioned PTO with ARKit data covering {len(capture_points)} viewpoints")
     
     def _find_control_points(self, project_file: str) -> str:
-        """Step 2: Find control points using cpfind optimized for iPhone ultra-wide spherical panoramas."""
+        """Step 2: Find control points using official cpfind workflow."""
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
-        # Try advanced research-based flags first, fallback to basic if unsupported
-        advanced_cmd = [
+        # OFFICIAL HUGIN WORKFLOW: Standard cpfind command
+        cmd = [
             "cpfind",
-            "--multirow",           # Essential for multi-row spherical panoramas
-            "--celeste",            # Sky detection for better control points
-            "--prealigned",         # CRITICAL: Use ARKit poses to guide matching, skip impossible pairs
-            "--fullscale",          # CRITICAL: Full resolution for ultra-wide edge detail extraction
-            "--linearmatchlen", "2", # Match each image with next AND next+1 for connectivity
-            "--sieve1width", "50",   # Increased sieve size for high-res images
-            "--sieve1height", "50",
-            "--sieve1size", "300",   # Larger feature detection for 4032×3024 images
-            "-o", cp_project,
-            project_file
+            "--multirow",           # Official: multi-row panorama detection
+            "--celeste",            # Official: cloud/sky masking for outdoor scenes
+            "-o", cp_project,       # Official: output file specification
+            project_file            # Official: input project file
         ]
         
-        # Fallback command without new flags
-        basic_cmd = [
-            "cpfind",
-            "--multirow",           # Essential for multi-row spherical panoramas
-            "--celeste",            # Sky detection for better control points
-            "--linearmatchlen", "2", # Match each image with next AND next+1 for connectivity
-            "--sieve1width", "50",   # Increased sieve size for high-res images
-            "--sieve1height", "50",
-            "--sieve1size", "300",   # Larger feature detection for 4032×3024 images
-            "-o", cp_project,
-            project_file
-        ]
-        
-        # Try advanced version first
-        logger.info("🔍 Attempting advanced cpfind with --prealigned and --fullscale...")
-        try:
-            self._run_command(advanced_cmd, "cpfind (advanced)", timeout=900)
-            logger.info("✅ Advanced cpfind successful - using ARKit-guided matching")
-        except RuntimeError as e:
-            logger.warning(f"⚠️ Advanced cpfind failed: {e}")
-            logger.info("🔄 Falling back to basic cpfind without new flags...")
-            
-            # Remove any partial output
-            if os.path.exists(cp_project):
-                os.remove(cp_project)
-            
-            # Try basic version
-            self._run_command(basic_cmd, "cpfind (basic)", timeout=900)
+        logger.info("🔍 Running official cpfind workflow...")
+        logger.info("📋 Command: cpfind --multirow --celeste -o project_cp.pto project.pto")
+        self._run_command(cmd, "cpfind", timeout=900)
         
         # Verify output and analyze connectivity
         if not os.path.exists(cp_project):
@@ -395,46 +362,6 @@ class CorrectHuginStitcher:
             logger.error("❌ This will cause nona to skip unconnected images!")
         
         return cp_project
-    
-    def _add_geometric_control_points(self, project_file: str) -> str:
-        """Step 2.5: Add geometric control points using geocpset for disconnected images."""
-        geo_project = os.path.join(self.temp_dir, "project_geo.pto")
-        
-        # RESEARCH-BASED: geocpset ensures every overlapping pair has at least one control point
-        logger.info("🔗 Adding geometric control points for disconnected images...")
-        logger.info("🔗 Using geocpset --each-overlap to guarantee connectivity")
-        
-        cmd = [
-            "geocpset", 
-            "--each-overlap",  # Force at least one geometric control point for every overlapping pair
-            "-o", geo_project,
-            project_file
-        ]
-        
-        try:
-            self._run_command(cmd, "geocpset", timeout=120)
-            
-            # Count control points after geocpset
-            new_cp_count = self._count_control_points(geo_project)
-            original_cp_count = self._count_control_points(project_file)
-            added_points = new_cp_count - original_cp_count
-            
-            logger.info(f"✅ Geocpset added {added_points} geometric control points")
-            logger.info(f"📊 Total control points: {original_cp_count} → {new_cp_count}")
-            
-            # Validate connectivity after geocpset
-            is_connected = self._validate_pto_connectivity(geo_project)
-            if is_connected:
-                logger.info("✅ All 16 images now connected - should achieve full rendering!")
-            else:
-                logger.warning("⚠️ Some images still disconnected despite geocpset")
-            
-            return geo_project
-            
-        except RuntimeError as e:
-            logger.warning(f"⚠️ Geocpset failed: {e}")
-            logger.warning("⚠️ Continuing without geometric control points - may affect connectivity")
-            return project_file  # Return original if geocpset fails
     
     def _clean_control_points(self, project_file: str) -> str:
         """Step 3: Clean control points using cpclean."""
@@ -466,51 +393,23 @@ class CorrectHuginStitcher:
             return project_file  # Return original if linefind fails
     
     def _optimize_panorama(self, project_file: str) -> str:
-        """Step 4: Optimize using autooptimiser with constrained parameters for ARKit positioning."""
+        """Step 4: Optimize using official autooptimiser workflow."""
         opt_project = os.path.join(self.temp_dir, "project_opt.pto")
         
-        # Configurable ARKit positioning mode (environment variable or default)
-        # False = full feature-based optimization (better quality, slower)
-        # True = preserve ARKit positioning (faster, may have quality issues)
-        preserve_arkit_positioning = os.environ.get("PRESERVE_ARKIT", "false").lower() == "true"
-        logger.info(f"🎯 ARKit positioning mode: {'PRESERVED' if preserve_arkit_positioning else 'FEATURE-BASED'}")
+        # OFFICIAL HUGIN WORKFLOW: Standard autooptimiser command
+        cmd = [
+            "autooptimiser",
+            "-a",  # Auto align mode (position optimization)
+            "-m",  # Photometric optimization
+            "-l",  # Level horizon
+            "-s",  # Select optimal projection/size
+            "-o", opt_project,
+            project_file
+        ]
         
-        if preserve_arkit_positioning and self._has_arkit_positioning(project_file):
-            logger.info("🎯 Using constrained optimization to preserve ARKit positioning")
-            
-            # Very conservative optimization - only optimize photometric parameters
-            # Skip position optimization (-a) to preserve our precise ARKit coordinates
-            cmd = [
-                "autooptimiser",
-                "-m",  # Optimize photometric parameters only
-                "-s",  # Optimize exposure only
-                "-o", opt_project,
-                project_file
-            ]
-            
-            logger.info("🔒 CONSTRAINED OPTIMIZATION: Preserving ARKit yaw/pitch positions, optimizing photometrics only")
-            logger.info("🔒 This prevents autooptimiser from clustering images together")
-            logger.info("🔒 All 16 images should maintain their spherical distribution")
-            
-        else:
-            logger.info("🔄 Using FEATURE-BASED optimization with geometric constraints")
-            logger.info("🔄 This enables natural alignment while preventing extreme positioning")
-            
-            # RESEARCH-BASED: Constrained optimization to prevent out-of-bounds positioning
-            # Skip -a to prevent extreme pitch values (>90°) that cause nona to skip images
-            cmd = [
-                "autooptimiser",
-                # "-a" removed to prevent extreme repositioning
-                "-m",  # Optimize photometric parameters
-                "-l",  # Optimize lens parameters
-                "-s",  # Optimize exposure
-                "-o", opt_project,
-                project_file
-            ]
-            
-            logger.info("🔒 Geometric positioning constrained to prevent out-of-bounds coordinates")
-            logger.info("🔒 This should ensure all 16 images render within valid spherical bounds")
-        
+        logger.info("🔍 Running official autooptimiser workflow...")
+        logger.info("📋 Command: autooptimiser -a -m -l -s -o project_opt.pto project_clean.pto")
+        logger.info("📋 This performs the same operation as hugin's 'Align' button")
         self._run_command(cmd, "autooptimiser")
         
         # Verify optimization didn't cluster images
@@ -763,22 +662,18 @@ class CorrectHuginStitcher:
         tiff_output = os.path.join(self.temp_dir, "final_panorama.tif")
         exr_output = os.path.join(self.temp_dir, "final_panorama.exr")
         
-        logger.info(f"🎨 Blending {len(tiff_files)} images with optimized enblend...")
+        logger.info(f"🎨 Blending {len(tiff_files)} images with official enblend...")
         
-        # ULTRA-FAST enblend for 16 high-resolution images (6144×3072)
+        # OFFICIAL HUGIN WORKFLOW: Standard enblend command for 360° panoramas
         cmd = [
             "enblend", 
             "-o", tiff_output,
-            "--levels=3",       # Minimal blending levels for speed
-            "--blend-colorspace=IDENTITY",  # Skip color space conversion
-            "--no-optimize",    # Skip optimization step
-            "--wrap=both",      # Handle 360° seam wrapping for equirectangular
-            "-v",               # Verbose output for progress monitoring
+            "--wrap=horizontal",  # Official: wrap at 360°/0° boundary for equirectangular
         ] + tiff_files
         
-        logger.info(f"🚀 Starting ultra-fast enblend with {len(tiff_files)} images...")
-        logger.info(f"🚀 Estimated time: 2-5 minutes for {len(tiff_files)} high-resolution images")
-        logger.info(f"🚀 Command: {' '.join(cmd)}")
+        logger.info("🔍 Running official enblend workflow...")
+        logger.info("📋 Command: enblend --wrap=horizontal -o panorama.tif project*.tif")
+        logger.info(f"📋 Blending {len(tiff_files)} images with horizontal wrapping for 360° panorama")
         
         # Log individual file sizes for progress estimation
         total_size = 0
