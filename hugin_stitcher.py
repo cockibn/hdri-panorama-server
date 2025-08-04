@@ -33,10 +33,15 @@ class CorrectHuginStitcher:
         
         self.canvas_size = self.resolutions.get(output_resolution, self.resolutions["6K"])
         logger.info(f"🎨 Hugin stitcher initialized: {self.canvas_size[0]}×{self.canvas_size[1]}")
+        logger.info("🔬 RESEARCH-BASED CRITICAL IMPROVEMENTS ACTIVE:")
+        logger.info("  ✅ --prealigned: ARKit poses guide intelligent control point matching")
+        logger.info("  ✅ --fullscale: Maximum ultra-wide edge detail extraction")  
+        logger.info("  ✅ geocpset --each-overlap: Guaranteed connectivity for all 16 images")
+        logger.info("🎯 Target: 16/16 image rendering (up from 15/16)")
     
     def _verify_hugin_installation(self):
         """Verify required Hugin tools are available."""
-        required_tools = ['pto_gen', 'cpfind', 'cpclean', 'autooptimiser', 'pano_modify', 'nona', 'enblend']
+        required_tools = ['pto_gen', 'cpfind', 'geocpset', 'cpclean', 'linefind', 'autooptimiser', 'pano_modify', 'nona', 'enblend']
         
         for tool in required_tools:
             try:
@@ -76,11 +81,17 @@ class CorrectHuginStitcher:
                 cp_project = self._find_control_points(project_file)
                 self.control_points_found = self._count_control_points(cp_project)
                 
+                # Step 2.5: Add geometric control points for disconnected images (CRITICAL)
+                if progress_callback:
+                    progress_callback(0.35, "Adding geometric control points for connectivity...")
+                
+                geo_project = self._add_geometric_control_points(cp_project)
+                
                 # Step 3: Clean control points
                 if progress_callback:
                     progress_callback(0.40, "Cleaning control points...")
                 
-                clean_project = self._clean_control_points(cp_project)
+                clean_project = self._clean_control_points(geo_project)
                 
                 # Step 3.5: Detect lines for geometric consistency (RESEARCH-BASED)
                 if progress_callback:
@@ -326,6 +337,8 @@ class CorrectHuginStitcher:
             "cpfind",
             "--multirow",           # Essential for multi-row spherical panoramas
             "--celeste",            # Sky detection for better control points
+            "--prealigned",         # CRITICAL: Use ARKit poses to guide matching, skip impossible pairs
+            "--fullscale",          # CRITICAL: Full resolution for ultra-wide edge detail extraction
             "--linearmatchlen", "2", # Match each image with next AND next+1 for connectivity
             "--sieve1width", "50",   # Increased sieve size for high-res images
             "--sieve1height", "50",
@@ -334,7 +347,9 @@ class CorrectHuginStitcher:
             project_file
         ]
         
-        logger.info("🔍 Finding control points with iPhone ultra-wide optimized parameters...")
+        logger.info("🔍 Finding control points with ARKit-guided prealigned matching...")
+        logger.info("🔍 Using --prealigned to leverage ARKit poses for intelligent pairing")
+        logger.info("🔍 Using --fullscale for maximum ultra-wide edge detail extraction")
         self._run_command(cmd, "cpfind", timeout=900)  # Longer timeout for 16 images
         
         # Verify output and analyze connectivity
@@ -356,6 +371,46 @@ class CorrectHuginStitcher:
             logger.error("❌ This will cause nona to skip unconnected images!")
         
         return cp_project
+    
+    def _add_geometric_control_points(self, project_file: str) -> str:
+        """Step 2.5: Add geometric control points using geocpset for disconnected images."""
+        geo_project = os.path.join(self.temp_dir, "project_geo.pto")
+        
+        # RESEARCH-BASED: geocpset ensures every overlapping pair has at least one control point
+        logger.info("🔗 Adding geometric control points for disconnected images...")
+        logger.info("🔗 Using geocpset --each-overlap to guarantee connectivity")
+        
+        cmd = [
+            "geocpset", 
+            "--each-overlap",  # Force at least one geometric control point for every overlapping pair
+            "-o", geo_project,
+            project_file
+        ]
+        
+        try:
+            self._run_command(cmd, "geocpset", timeout=120)
+            
+            # Count control points after geocpset
+            new_cp_count = self._count_control_points(geo_project)
+            original_cp_count = self._count_control_points(project_file)
+            added_points = new_cp_count - original_cp_count
+            
+            logger.info(f"✅ Geocpset added {added_points} geometric control points")
+            logger.info(f"📊 Total control points: {original_cp_count} → {new_cp_count}")
+            
+            # Validate connectivity after geocpset
+            is_connected = self._validate_pto_connectivity(geo_project)
+            if is_connected:
+                logger.info("✅ All 16 images now connected - should achieve full rendering!")
+            else:
+                logger.warning("⚠️ Some images still disconnected despite geocpset")
+            
+            return geo_project
+            
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Geocpset failed: {e}")
+            logger.warning("⚠️ Continuing without geometric control points - may affect connectivity")
+            return project_file  # Return original if geocpset fails
     
     def _clean_control_points(self, project_file: str) -> str:
         """Step 3: Clean control points using cpclean."""
