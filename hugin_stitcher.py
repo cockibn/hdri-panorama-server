@@ -662,67 +662,68 @@ class CorrectHuginStitcher:
         tiff_output = os.path.join(self.temp_dir, "final_panorama.tif")
         exr_output = os.path.join(self.temp_dir, "final_panorama.exr")
         
-        logger.info(f"🎨 Blending {len(tiff_files)} images with official enblend...")
+        # Log image information for debugging
+        logger.info(f"📋 Blending {len(tiff_files)} rendered images for 360° panorama")
+        missing_images = []
+        for i in range(16):
+            expected_file = os.path.join(self.temp_dir, f"rendered{i:04d}.tif")
+            if not os.path.exists(expected_file):
+                missing_images.append(i)
         
-        # OFFICIAL HUGIN WORKFLOW: Standard enblend command for 360° panoramas
-        cmd = [
-            "enblend", 
-            "-o", tiff_output,
-            "--wrap=horizontal",  # Official: wrap at 360°/0° boundary for equirectangular
-        ] + tiff_files
+        if missing_images:
+            logger.info(f"📋 Missing images: {missing_images} (partial coverage panorama)")
+        else:
+            logger.info("📋 Complete image set - full 360° coverage expected")
         
-        logger.info("🔍 Running official enblend workflow...")
-        logger.info("📋 Command: enblend --wrap=horizontal -o panorama.tif project*.tif")
-        logger.info(f"📋 Blending {len(tiff_files)} images with horizontal wrapping for 360° panorama")
+        # Progressive enblend strategy: Start simple, add complexity only if needed
+        strategies = [
+            {
+                "name": "Basic (most compatible)",
+                "cmd": ["enblend", "-o", tiff_output] + tiff_files,
+                "timeout": 300
+            },
+            {
+                "name": "No optimization", 
+                "cmd": ["enblend", "-o", tiff_output, "--no-optimize"] + tiff_files,
+                "timeout": 450
+            },
+            {
+                "name": "Reduced levels",
+                "cmd": ["enblend", "-o", tiff_output, "--levels=3", "--no-optimize"] + tiff_files,
+                "timeout": 600
+            },
+            {
+                "name": "Minimal levels",
+                "cmd": ["enblend", "-o", tiff_output, "--levels=2", "--no-optimize"] + tiff_files,
+                "timeout": 900
+            }
+        ]
         
-        # Log individual file sizes for progress estimation
-        total_size = 0
-        for i, tiff_file in enumerate(tiff_files):
-            size = os.path.getsize(tiff_file)
-            total_size += size
-            if i < 3:  # Log first 3 files
-                logger.info(f"📄 Input {i}: {size} bytes ({size/1024/1024:.1f} MB)")
-        logger.info(f"📊 Total input data: {total_size/1024/1024:.1f} MB")
-        
-        try:
-            self._run_command(cmd, "enblend", timeout=300)  # 5 minute timeout for ultra-fast version
-        except RuntimeError as e:
-            if "timed out" in str(e):
-                # If timeout, try research-based emergency parameters
-                logger.warning("⚠️ Ultra-fast enblend timed out, trying emergency speed version...")
-                emergency_cmd = [
-                    "enblend", 
-                    "-o", tiff_output,
-                    "--levels=2",       # Minimal but functional blending
-                    "--fine-mask",      # Better quality despite speed focus
-                    "--no-optimize",    # Skip slow optimization
-                    "--wrap=both",      # Essential for 360° panoramas
-                    "-v"
-                ] + tiff_files
+        success = False
+        for i, strategy in enumerate(strategies):
+            if success:
+                break
                 
-                try:
-                    self._run_command(emergency_cmd, "enblend", timeout=600)  # 10 minutes for emergency version
-                except RuntimeError:
-                    # Last resort: basic enblend with long timeout
-                    logger.warning("⚠️ Ultra-fast enblend failed, trying basic version...")
-                    basic_cmd = ["enblend", "-o", tiff_output] + tiff_files
-                    self._run_command(basic_cmd, "enblend", timeout=1200)  # 20 minutes
-            else:
-                # Non-timeout error, try dimension-safe basic version
-                logger.warning("⚠️ Fast enblend failed with error, trying dimension-safe basic version...")
+            logger.info(f"🔍 Trying enblend strategy {i+1}/{len(strategies)}: {strategy['name']}")
+            logger.info(f"📋 Command: {' '.join(strategy['cmd'])}")
+            
+            # Remove any partial output from previous attempts
+            if os.path.exists(tiff_output):
+                os.remove(tiff_output)
                 
-                # RESEARCH-BASED: Use dimension-safe parameters for mixed sizes
-                basic_cmd = [
-                    "enblend", 
-                    "-o", tiff_output,
-                    "--fine-mask",      # Better handling of dimension differences
-                    "--wrap=both",      # Essential for 360° panoramas
-                    "--compression=LZW", # Reduce memory usage
-                    "-v"                # Verbose for debugging
-                ] + tiff_files
-                
-                logger.info(f"🔧 Fallback command: {' '.join(basic_cmd)}")
-                self._run_command(basic_cmd, "enblend", timeout=900)
+            try:
+                self._run_command(strategy["cmd"], f"enblend ({strategy['name']})", timeout=strategy["timeout"])
+                if os.path.exists(tiff_output) and os.path.getsize(tiff_output) > 0:
+                    logger.info(f"✅ Enblend strategy '{strategy['name']}' succeeded!")
+                    success = True
+                else:
+                    logger.warning(f"⚠️ Enblend strategy '{strategy['name']}' produced no output")
+            except Exception as e:
+                logger.warning(f"⚠️ Enblend strategy '{strategy['name']}' failed: {e}")
+                continue
+        
+        if not success:
+            raise RuntimeError(f"All {len(strategies)} enblend strategies failed - images may have insufficient overlap or geometric issues")
         
         if not os.path.exists(tiff_output):
             raise RuntimeError("enblend failed to create final panorama")
