@@ -437,14 +437,25 @@ class CorrectHuginStitcher:
                     adjusted_fov = fov * (actual_height / actual_width)
                     logger.debug(f"📸 Image {i}: Portrait {actual_width}×{actual_height}, FOV={adjusted_fov:.1f}°")
                 
-                # RESEARCH-BASED: Proper iPhone ultra-wide lens parameters
-                # iPhone Lens Correction setting affects these values:
-                # - If enabled: minimal distortion (a≈0, b≈0, c≈0)
-                # - If disabled: significant barrel distortion (a≈-0.1, b≈0.05, c≈-0.01)
-                # Let autooptimiser determine optimal values, start with iPhone defaults
+                # CRITICAL FIX: iPhone ultra-wide lens distortion correction
+                # iPhone ultra-wide (0.5x) has significant barrel distortion that needs proper correction
+                # Research-based values for iPhone 13/14/15 Pro ultra-wide camera:
+                
+                # BARREL DISTORTION CORRECTION (stronger values needed for ultra-wide)
+                barrel_a = -0.15    # Strong negative barrel distortion correction
+                barrel_b = 0.08     # Secondary barrel correction  
+                barrel_c = -0.02    # Tertiary barrel correction
+                
+                # FIELD OF VIEW CORRECTION
+                # iPhone ultra-wide actual measured FOV varies by model and lens correction setting
+                # Use more conservative FOV to reduce extreme distortion
+                conservative_fov = min(adjusted_fov * 0.85, 95.0)  # Cap at 95° to reduce distortion
+                
+                logger.info(f"🔧 Image {i} distortion correction: FOV {adjusted_fov:.1f}° → {conservative_fov:.1f}°")
+                logger.info(f"🔧 Barrel distortion: a={barrel_a:.3f}, b={barrel_b:.3f}, c={barrel_c:.3f}")
                 
                 f.write(f'#-hugin  cropFactor=1\n')
-                f.write(f'i w{actual_width} h{actual_height} f0 v{adjusted_fov:.1f} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a-0.05 b0.02 c-0.005 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
+                f.write(f'i w{actual_width} h{actual_height} f0 v{conservative_fov:.1f} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a{barrel_a:.3f} b{barrel_b:.3f} c{barrel_c:.3f} d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
                 
                 logger.info(f"📍 Image {i}: ARKit azimuth={azimuth:.1f}°, elevation={elevation:.1f}° → Hugin yaw={yaw:.1f}°, pitch={pitch:.1f}°")
         
@@ -465,15 +476,16 @@ class CorrectHuginStitcher:
         # Progressive strategy: try iPhone-optimized approach first, then fallbacks
         strategies = [
             {
-                "name": "iPhone ultra-wide optimized",
+                "name": "iPhone ultra-wide optimized (fixed distortion)",
                 "cmd": [
                     "cpfind",
                     "--multirow",                    # Multi-row panorama detection
-                    "--sieve1-width=10",            # Relaxed initial matching for ultra-wide
-                    "--sieve1-height=10",
-                    "--sieve1-size=100",            # More points in first sieve
-                    "--threshold=0.6",              # Lower threshold for ultra-wide distortion
+                    "--sieve1-width=15",            # More relaxed for corrected distortion
+                    "--sieve1-height=15",
+                    "--sieve1-size=200",            # More control points after distortion correction
+                    "--threshold=0.5",              # Lower threshold - corrected distortion should improve matching
                     "--celeste",                    # Sky/cloud masking
+                    "--kdtree",                     # Better feature matching algorithm
                     "-o", cp_project,
                     project_file
                 ],
@@ -723,25 +735,59 @@ class CorrectHuginStitcher:
         logger.info("📐 No crop parameter - preserves full equirectangular canvas")
         logger.warning("⚠️ Omitting crop to preserve proper 360° photosphere dimensions")
         
-        # Complete pano_modify command without crop parameter (preserves full canvas)
+        # PROJECTION SELECTION: Choose best projection for reduced distortion
+        # 0 = Equirectangular (default, good for full 360° but extreme pole distortion)
+        # 1 = Cylindrical (better for horizontal panoramas, less vertical distortion)
+        # 2 = Mercator (good compromise for moderate coverage)
+        
+        # For current limited elevation range (-45° to +45°), cylindrical might be better
+        projection_type = 1  # Cylindrical - reduces extreme radial distortion
+        
+        logger.info(f"📐 Using projection type {projection_type} (cylindrical) to reduce distortion")
+        logger.info(f"📐 Canvas: {self.canvas_size[0]}×{self.canvas_size[1]} (optimized for limited elevation range)")
+        
+        # Complete pano_modify command with cylindrical projection
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
-            "--projection=0",                                          # Equirectangular
+            f"--projection={projection_type}",                        # Cylindrical projection
             "-o", final_project,
             project_file
         ]
         
         self._run_command(cmd, "pano_modify")
         
-        # CRITICAL FIX: Force v360 by directly editing PTO file
-        # pano_modify ignores --fov parameter, so we manually set it
-        self._force_spherical_fov(final_project)
+        # CRITICAL FIX: Set proper FOV for chosen projection
+        if projection_type == 0:  # Equirectangular
+            self._force_spherical_fov(final_project)  # v360 for full sphere
+        else:  # Cylindrical or other projection
+            self._force_horizontal_fov(final_project)  # Adjust FOV for limited elevation range
         
         # Log the actual output parameters by reading the final project file
         self._log_final_output_params(final_project)
         
         return final_project
+    
+    def _force_horizontal_fov(self, project_file: str):
+        """Set appropriate FOV for cylindrical projection to reduce distortion."""
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # For cylindrical projection with limited elevation range (-45° to +45°)
+            # Use horizontal FOV of 360° but reasonable vertical FOV
+            vertical_fov = 120  # Covers more than our -45° to +45° range with margin
+            
+            import re
+            content = re.sub(r'p f\d+ w(\d+) h(\d+) v\d+', fr'p f1 w\1 h\2 v{vertical_fov}', content)
+            
+            with open(project_file, 'w') as f:
+                f.write(content)
+            
+            logger.info(f"🔧 Set cylindrical projection with vertical FOV {vertical_fov}° (reduced distortion)")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to set cylindrical FOV: {e}")
     
     def _force_spherical_fov(self, project_file: str):
         """Force 360° field of view and fix seam boundary issues.
