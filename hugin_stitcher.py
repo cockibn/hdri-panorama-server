@@ -380,14 +380,17 @@ class CorrectHuginStitcher:
                 while yaw <= -180:
                     yaw += 360
                 
-                # FIXED PITCH: Elevation maps to pitch but needs validation for equirectangular
-                # For proper 360° coverage, we need images closer to poles
-                pitch = elevation
+                # CRITICAL FIX: Elevation to pitch mapping with proper orientation
+                # iOS ARKit elevation: positive = up, negative = down
+                # Hugin pitch: positive = up, negative = down
+                # BUT: The images appear flipped, so we need to invert the elevation
+                pitch = -elevation  # INVERT elevation to fix flipped orientation
                 
                 # CRITICAL DEBUG: Log coordinate transformation
                 logger.info(f"🔄 Image {i} coordinate conversion:")
                 logger.info(f"   ARKit: azimuth={azimuth:.1f}° (0°=east), elevation={elevation:.1f}°")
-                logger.info(f"   → Equirectangular: yaw={yaw:.1f}° (0°=center), pitch={pitch:.1f}°")
+                logger.info(f"   → Hugin: yaw={yaw:.1f}° (0°=center), pitch={pitch:.1f}° (INVERTED)")
+                logger.info(f"   🔄 Elevation {elevation:.1f}° → Pitch {pitch:.1f}° (flipped to fix orientation)")
                 
                 # POLE COVERAGE WARNING: Check if we have adequate coverage near poles
                 if abs(pitch) < 60:  # Only checking within ±60° of horizon
