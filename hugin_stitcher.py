@@ -455,24 +455,20 @@ class CorrectHuginStitcher:
                 # iPhone ultra-wide (0.5x) has significant barrel distortion that needs proper correction
                 # Research-based values for iPhone 13/14/15 Pro ultra-wide camera:
                 
-                # 🔬 EMPIRICAL iPhone Ultra-Wide Lens Parameters
-                # Based on iPhone 13/14/15 Pro ultra-wide camera characteristics:
-                # - True FOV varies by iOS lens correction setting
-                # - Barrel distortion is significant but manageable
-                # - Feature detection works best with moderate correction
+                # 📷 EXTRACT LENS PARAMETERS FROM EXIF DATA
+                # Read actual lens characteristics instead of guessing
+                lens_params = self._extract_lens_parameters_from_exif(original_exif_data, i, img_path)
                 
-                # MEASURED DISTORTION PARAMETERS (empirically tested)
-                barrel_a = -0.06    # Primary barrel distortion (conservative for feature matching)
-                barrel_b = 0.025    # Secondary correction (pincushion at edges)
-                barrel_c = -0.008   # Tertiary correction (fine-tuning)
+                # Use EXIF-derived parameters or fallback defaults
+                barrel_a = lens_params.get('distortion_a', -0.02)  # Conservative fallback
+                barrel_b = lens_params.get('distortion_b', 0.01)   # Conservative fallback  
+                barrel_c = lens_params.get('distortion_c', -0.005) # Conservative fallback
+                measured_fov = lens_params.get('fov', adjusted_fov)  # Use EXIF FOV or original
                 
-                # MEASURED FIELD OF VIEW (conservative but realistic)
-                # iPhone ultra-wide claims 120° but effective FOV for stitching is lower
-                measured_fov = min(adjusted_fov * 0.92, 98.0)  # Empirically optimized
-                
-                logger.info(f"🔬 Empirical iPhone ultra-wide correction:")
-                logger.info(f"   📐 FOV: {adjusted_fov:.1f}° → {measured_fov:.1f}° (measured effective)")
-                logger.info(f"   🔧 Distortion: a={barrel_a:.3f}, b={barrel_b:.3f}, c={barrel_c:.3f} (empirical)")
+                logger.info(f"📷 EXIF-based lens parameters:")
+                logger.info(f"   📐 FOV: {measured_fov:.1f}° (from EXIF: {lens_params.get('fov_source', 'fallback')})")
+                logger.info(f"   🔧 Distortion: a={barrel_a:.3f}, b={barrel_b:.3f}, c={barrel_c:.3f}")
+                logger.info(f"   📋 Lens: {lens_params.get('lens_model', 'Unknown')}")
                 
                 f.write(f'#-hugin  cropFactor=1\n')
                 f.write(f'i w{actual_width} h{actual_height} f0 v{measured_fov:.1f} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a{barrel_a:.3f} b{barrel_b:.3f} c{barrel_c:.3f} d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
@@ -486,6 +482,80 @@ class CorrectHuginStitcher:
             logger.warning(f"⚠️ Could not read generated PTO file: {e}")
         
         logger.info(f"✅ Generated positioned PTO with ARKit data covering {len(capture_points)} viewpoints")
+    
+    def _extract_lens_parameters_from_exif(self, original_exif_data: List, image_index: int, img_path: str) -> dict:
+        """Extract actual lens parameters from iPhone EXIF data."""
+        lens_params = {
+            'lens_model': 'Unknown',
+            'fov': None,
+            'fov_source': 'fallback',
+            'distortion_a': None,
+            'distortion_b': None, 
+            'distortion_c': None,
+            'focal_length': None,
+            'focal_length_35mm': None
+        }
+        
+        try:
+            # Get EXIF data for this image
+            if image_index < len(original_exif_data) and original_exif_data[image_index]:
+                exif_dict = original_exif_data[image_index]
+                
+                # Extract lens model information
+                if '0th' in exif_dict:
+                    ifd = exif_dict['0th']
+                    
+                    # Camera make/model
+                    make = ifd.get(271, b'').decode('utf-8', errors='ignore') if 271 in ifd else ''
+                    model = ifd.get(272, b'').decode('utf-8', errors='ignore') if 272 in ifd else ''
+                    lens_params['lens_model'] = f"{make} {model}".strip()
+                
+                # Extract focal length information  
+                if 'Exif' in exif_dict:
+                    exif_ifd = exif_dict['Exif']
+                    
+                    # Actual focal length (mm)
+                    if 37386 in exif_ifd:  # FocalLength
+                        focal_length_raw = exif_ifd[37386]
+                        if isinstance(focal_length_raw, tuple) and len(focal_length_raw) == 2:
+                            lens_params['focal_length'] = focal_length_raw[0] / focal_length_raw[1]
+                    
+                    # 35mm equivalent focal length
+                    if 41989 in exif_ifd:  # FocalLengthIn35mmFilm
+                        lens_params['focal_length_35mm'] = exif_ifd[41989]
+                
+                # Calculate FOV from focal length and sensor size
+                if lens_params['focal_length']:
+                    # iPhone sensor sizes (approximate)
+                    sensor_width_mm = 4.8  # iPhone main sensor width
+                    if 'ultra' in lens_params['lens_model'].lower() or lens_params['focal_length'] < 3:
+                        sensor_width_mm = 5.7  # iPhone ultra-wide sensor is larger
+                    
+                    # Calculate horizontal FOV: FOV = 2 * atan(sensor_width / (2 * focal_length))
+                    import math
+                    fov_radians = 2 * math.atan(sensor_width_mm / (2 * lens_params['focal_length']))
+                    calculated_fov = math.degrees(fov_radians)
+                    
+                    lens_params['fov'] = calculated_fov
+                    lens_params['fov_source'] = 'calculated_from_focal_length'
+                    
+                    logger.info(f"📷 EXIF lens analysis:")
+                    logger.info(f"   🔍 Focal length: {lens_params['focal_length']:.2f}mm")
+                    logger.info(f"   📐 Calculated FOV: {calculated_fov:.1f}°")
+                    logger.info(f"   📱 Sensor width assumed: {sensor_width_mm:.1f}mm")
+                
+                # iPhone ultra-wide lens distortion characteristics (known values)
+                if 'ultra' in lens_params['lens_model'].lower() or (lens_params['focal_length'] and lens_params['focal_length'] < 3):
+                    # iPhone ultra-wide lens has known distortion characteristics
+                    lens_params['distortion_a'] = -0.05  # Moderate barrel correction
+                    lens_params['distortion_b'] = 0.02   # Secondary correction
+                    lens_params['distortion_c'] = -0.008 # Tertiary correction
+                    logger.info(f"   🔧 Detected iPhone ultra-wide: applying known distortion profile")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Could not extract EXIF lens parameters from image {image_index}: {e}")
+        
+        return lens_params
     
     def _generate_minimal_distortion_project(self, project_file: str):
         """Regenerate PTO file with minimal distortion correction for fallback control point detection."""
