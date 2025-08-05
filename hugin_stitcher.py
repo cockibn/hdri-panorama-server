@@ -229,7 +229,27 @@ class CorrectHuginStitcher:
         azimuths = [cp.get('azimuth', 0.0) for cp in capture_points]
         elevations = [cp.get('elevation', 0.0) for cp in capture_points]
         
-        logger.info(f"📊 ARKit data ranges - Azimuth: {min(azimuths):.1f}° to {max(azimuths):.1f}°, Elevation: {min(elevations):.1f}° to {max(elevations):.1f}°")
+        azimuth_range = max(azimuths) - min(azimuths)
+        elevation_range = max(elevations) - min(elevations)
+        
+        logger.info(f"📊 ARKit data ranges - Azimuth: {min(azimuths):.1f}° to {max(azimuths):.1f}° (span: {azimuth_range:.1f}°)")
+        logger.info(f"📊 ARKit data ranges - Elevation: {min(elevations):.1f}° to {max(elevations):.1f}° (span: {elevation_range:.1f}°)")
+        
+        # CRITICAL ANALYSIS: Check for pole coverage issues
+        if elevation_range < 120:  # Should be close to 180° for full sphere
+            logger.error(f"❌ LIMITED POLE COVERAGE: Elevation span is only {elevation_range:.1f}°")
+            logger.error(f"❌ For proper 360° equirectangular panorama, need coverage closer to ±90°")
+            logger.error(f"❌ Current max elevation: {max(elevations):.1f}° (should be >+60° for upper pole)")
+            logger.error(f"❌ Current min elevation: {min(elevations):.1f}° (should be <-60° for lower pole)")
+            logger.warning(f"⚠️ This will cause 'pole distribution problem' - missing sphere top/bottom")
+            
+            # Suggest iOS app changes needed
+            if max(elevations) < 60:
+                logger.error(f"❌ MISSING UPPER POLE: No images above {max(elevations):.1f}° - zenith area will be empty")
+            if min(elevations) > -60:
+                logger.error(f"❌ MISSING LOWER POLE: No images below {min(elevations):.1f}° - nadir area will be empty")
+        else:
+            logger.info(f"✅ Good elevation coverage for 360° panorama")
         
         # Log EVERY single coordinate to identify problematic data
         logger.info(f"🔍 COMPLETE ARKit positioning data:")
@@ -344,24 +364,36 @@ class CorrectHuginStitcher:
                 # - pitch: vertical rotation (-90° to +90°, 0° = horizon, +90° = up)
                 # - roll: camera rotation around optical axis (should be 0° for panoramas)
                 
-                # CORRECTED CONVERSION: Direct mapping with validation
-                # This assumes ARKit data is already in proper spherical coordinates
-                yaw = azimuth
+                # FIXED CONVERSION: Correct coordinate system transformation
+                # iOS ARKit: azimuth 0° = +X (east), counter-clockwise
+                # Hugin: yaw 0° = forward direction in panorama center
+                # Equirectangular: center of image = 0° longitude, left edge = -180°, right edge = +180°
                 
-                # CRITICAL DEBUG: Log ARKit vs Hugin coordinate mapping
-                logger.info(f"🔄 Image {i} coordinate conversion:")
-                logger.info(f"   ARKit: azimuth={azimuth:.1f}°, elevation={elevation:.1f}°")
-                logger.info(f"   → Hugin: yaw={yaw:.1f}°, pitch={elevation:.1f}°")
+                # CRITICAL FIX: Convert ARKit azimuth to proper equirectangular longitude
+                # ARKit 0° = east, but equirectangular 0° = center of panorama
+                # Need to rotate coordinate system so ARKit 0° (east) maps to yaw +90°
+                yaw = azimuth - 90.0  # Rotate coordinate system: east (0°) → yaw 90°
                 
-                # Ensure yaw is in Hugin's preferred -180 to +180 range
-                # This prevents 180° seam boundary issues
+                # Normalize to -180 to +180 range for Hugin
                 while yaw > 180:
                     yaw -= 360
                 while yaw <= -180:
                     yaw += 360
                 
-                # Elevation maps directly to pitch (both systems: positive = up)
+                # FIXED PITCH: Elevation maps to pitch but needs validation for equirectangular
+                # For proper 360° coverage, we need images closer to poles
                 pitch = elevation
+                
+                # CRITICAL DEBUG: Log coordinate transformation
+                logger.info(f"🔄 Image {i} coordinate conversion:")
+                logger.info(f"   ARKit: azimuth={azimuth:.1f}° (0°=east), elevation={elevation:.1f}°")
+                logger.info(f"   → Equirectangular: yaw={yaw:.1f}° (0°=center), pitch={pitch:.1f}°")
+                
+                # POLE COVERAGE WARNING: Check if we have adequate coverage near poles
+                if abs(pitch) < 60:  # Only checking within ±60° of horizon
+                    logger.debug(f"   📍 Image {i} in mid-latitudes (pitch={pitch:.1f}°) - good for equirectangular")
+                else:
+                    logger.warning(f"   🏔️ Image {i} near pole (pitch={pitch:.1f}°) - may cause distortion")
                 
                 # Keep roll at zero for spherical panoramas (no camera rotation around optical axis)
                 roll_hugin = 0.0
@@ -712,7 +744,8 @@ class CorrectHuginStitcher:
         return final_project
     
     def _force_spherical_fov(self, project_file: str):
-        """Force 360° field of view and fix seam boundary issues."""
+        """Force 360° field of view and fix seam boundary issues.
+        Also ensures proper equirectangular coordinate mapping matches iOS expectations."""
         try:
             with open(project_file, 'r') as f:
                 content = f.read()
