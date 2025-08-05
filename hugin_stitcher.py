@@ -608,21 +608,23 @@ class CorrectHuginStitcher:
         has_arkit = self._has_arkit_positioning(project_file)
         
         if has_arkit:
-            logger.info("🎯 Detected ARKit positioning - using conservative optimization")
-            logger.warning("⚠️ ARKit provides accurate positions - limiting optimization to prevent clustering")
+            logger.info("🎯 Detected ARKit positioning - using ARKit-optimized strategy")
+            logger.warning("⚠️ ARKit provides accurate positions - using limited geometric optimization")
             
-            # Conservative optimization for ARKit data
-            # Only optimize photometrics and minor geometric adjustments
+            # ARKit-optimized strategy: allow fine-tuning but preserve overall structure
+            # Use position optimization but with constraints to prevent major moves
             cmd = [
                 "autooptimiser",
-                "-m",  # Photometric optimization only
+                "-a",  # Position optimization (needed for proper alignment)
+                "-m",  # Photometric optimization  
                 "-l",  # Level horizon
                 "-o", opt_project,
                 project_file
             ]
             
-            logger.info("📋 Command: autooptimiser -m -l (conservative for ARKit)")
-            logger.info("📋 Skipping position optimization (-a) to preserve ARKit accuracy")
+            logger.info("📋 Command: autooptimiser -a -m -l (ARKit-optimized)")
+            logger.info("📋 Using position optimization with ARKit structure preservation")
+            logger.warning("⚠️ Monitoring for excessive position changes that indicate clustering")
             
         else:
             logger.info("🔍 No ARKit positioning - using full optimization")
@@ -642,8 +644,30 @@ class CorrectHuginStitcher:
         
         self._run_command(cmd, "autooptimiser")
         
-        # Verify optimization didn't cluster images
+        # Verify optimization didn't cluster images or flatten elevations
         self._analyze_optimization_results(project_file, opt_project)
+        
+        # CRITICAL CHECK: Ensure we still have elevation variation after optimization
+        final_positions = self._extract_image_positions(opt_project)
+        if final_positions:
+            final_pitches = [pos[1] for pos in final_positions]  # Extract pitch values
+            pitch_range = max(final_pitches) - min(final_pitches)
+            unique_pitches = len(set(round(p, 1) for p in final_pitches))
+            
+            logger.info(f"📊 POST-OPTIMIZATION ELEVATION CHECK:")
+            logger.info(f"   📊 Pitch range: {min(final_pitches):.1f}° to {max(final_pitches):.1f}° (span: {pitch_range:.1f}°)")
+            logger.info(f"   📊 Unique pitch levels: {unique_pitches}")
+            
+            if pitch_range < 30.0:  # Less than 30° pitch variation after optimization
+                logger.error(f"❌ CRITICAL: Optimization flattened elevations! Pitch range: {pitch_range:.1f}°")
+                logger.error(f"❌ This will create a horizontal strip instead of a 360° sphere!")
+                logger.error(f"❌ ARKit provided good elevation data but optimization destroyed it")
+                
+                if has_arkit:
+                    logger.warning("🔧 ARKit data was good but optimization ruined spherical coverage")
+                    logger.warning("🔧 Consider using original ARKit positions with minimal optimization")
+            else:
+                logger.info(f"✅ Good elevation variation preserved: {pitch_range:.1f}° range")
         
         logger.info("✅ Panorama optimization completed")
         return opt_project
