@@ -516,22 +516,33 @@ class CorrectHuginStitcher:
         
         # RESEARCH-BASED: Verify connectivity for all images
         if best_cp_count < 80:  # Minimum ~5 points per image pair for 16 images
-            logger.warning(f"⚠️ LOW CONTROL POINT COUNT: {best_cp_count} may cause connectivity issues")
-            logger.warning("⚠️ This could explain why only some images render")
+            logger.error(f"❌ CRITICAL: VERY LOW CONTROL POINT COUNT: {best_cp_count}")
+            logger.error("❌ This will cause poor stitching quality and missing images")
+            logger.error("❌ Feature detection is failing on iPhone ultra-wide images")
         elif best_cp_count >= 150:
             logger.info("✅ EXCELLENT control point count - all images should render properly")
         else:
             logger.info("✅ GOOD control point count - most images should render")
         
-        # Validate connectivity (critical for understanding rendering failures)
-        is_connected = self._validate_pto_connectivity(cp_project)
-        if not is_connected:
-            logger.error("❌ CRITICAL: Some images are not connected via control points!")
-            logger.error("❌ This will cause nona to skip unconnected images!")
-            logger.info("🔧 Attempting geocpset to connect isolated images...")
+        # CRITICAL: For ultra-wide iPhone images, always supplement with geocpset
+        # Feature detection often fails due to lens distortion, but ARKit positioning is excellent
+        if best_cp_count < 100:  # Force geocpset for low control point counts
+            logger.warning("🔧 FORCE GEOCPSET: Low control points detected, using ARKit positioning")
+            logger.warning("🔧 Ultra-wide lens distortion often breaks feature detection")
+            logger.warning("🔧 ARKit positioning data can create geometric control points")
             
-            # Try to fix connectivity with geocpset
+            # Force geocpset to supplement weak feature detection
             cp_project = self._fix_connectivity_with_geocpset(cp_project)
+        else:
+            # Still validate connectivity for good control point counts
+            is_connected = self._validate_pto_connectivity(cp_project)
+            if not is_connected:
+                logger.error("❌ CRITICAL: Some images are not connected via control points!")
+                logger.error("❌ This will cause nona to skip unconnected images!")
+                logger.info("🔧 Attempting geocpset to connect isolated images...")
+                
+                # Try to fix connectivity with geocpset
+                cp_project = self._fix_connectivity_with_geocpset(cp_project)
         
         return cp_project
     
@@ -608,23 +619,18 @@ class CorrectHuginStitcher:
         has_arkit = self._has_arkit_positioning(project_file)
         
         if has_arkit:
-            logger.info("🎯 Detected ARKit positioning - using ARKit-optimized strategy")
-            logger.warning("⚠️ ARKit provides accurate positions - using limited geometric optimization")
+            logger.info("🎯 Detected ARKit positioning - DISABLING autooptimiser completely")
+            logger.warning("⚠️ ARKit provides perfect positions - optimization causes geometric catastrophe")
+            logger.error("⚠️ EMERGENCY MODE: Skipping autooptimiser to preserve ARKit accuracy")
             
-            # ARKit-optimized strategy: allow fine-tuning but preserve overall structure
-            # Use position optimization but with constraints to prevent major moves
-            cmd = [
-                "autooptimiser",
-                "-a",  # Position optimization (needed for proper alignment)
-                "-m",  # Photometric optimization  
-                "-l",  # Level horizon
-                "-o", opt_project,
-                project_file
-            ]
+            # EMERGENCY FIX: Skip autooptimiser entirely for ARKit data
+            # Copy input to output without any optimization
+            import shutil
+            shutil.copy2(project_file, opt_project)
             
-            logger.info("📋 Command: autooptimiser -a -m -l (ARKit-optimized)")
-            logger.info("📋 Using position optimization with ARKit structure preservation")
-            logger.warning("⚠️ Monitoring for excessive position changes that indicate clustering")
+            logger.info("📋 Command: SKIPPED (copying project file unchanged)")
+            logger.info("📋 Using pure ARKit positioning without any optimization")
+            logger.warning("⚠️ This preserves perfect ARKit geometry but skips photometric optimization")
             
         else:
             logger.info("🔍 No ARKit positioning - using full optimization")
