@@ -383,10 +383,13 @@ class CorrectHuginStitcher:
                 # - elevation +90° (up) → ny=1.0 → y=0 (top of image)
                 # - elevation -90° (down) → ny=0.0 → y=height (bottom of image)
                 
-                # EXACT REPRODUCTION OF iOS EQUIRECTANGULAR MAPPING:
+                # EXACT REPRODUCTION OF iOS EQUIRECTANGULAR MAPPING WITH PROPER WRAPPING:
                 # This matches the iOS sphericalToEquirectangular function exactly
                 wrap_azimuth = azimuth % 360  # Ensure 0-360 range
                 nx = (wrap_azimuth + 180) / 360  # iOS mapping: azimuth → normalized X
+                
+                # CRITICAL FIX: Wrap nx to [0,1] range (iOS does this implicitly with image bounds)
+                nx = nx % 1.0  # Ensure nx stays within [0,1] range for proper canvas mapping
                 
                 # Convert nx back to Hugin yaw coordinate system (-180 to +180)
                 yaw = nx * 360 - 180  # Convert 0-1 range back to -180° to +180°
