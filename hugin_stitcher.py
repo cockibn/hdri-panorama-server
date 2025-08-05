@@ -76,7 +76,7 @@ class CorrectHuginStitcher:
                 if progress_callback:
                     progress_callback(0.15, "Generating project file...")
                 
-                project_file = self._generate_project_file(image_paths, capture_points, original_exif_data)
+                project_file = self._generate_project_file(image_paths, capture_points, exif_data)
                 
                 # Step 2: Find control points (Official Hugin workflow)
                 if progress_callback:
