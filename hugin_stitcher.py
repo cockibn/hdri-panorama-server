@@ -256,20 +256,51 @@ class CorrectHuginStitcher:
             azimuth_groups[key] = azimuth_groups.get(key, 0) + 1
         logger.info(f"📊 Azimuth distribution by 45° groups: {azimuth_groups}")
         
-        # Check for spherical distribution
+        # COMPREHENSIVE SPHERICAL DISTRIBUTION ANALYSIS
         elevation_range = max(elevations) - min(elevations)
+        azimuth_range = max(azimuths) - min(azimuths)
         unique_elevations = len(set(round(e, 1) for e in elevations))
+        unique_azimuths = len(set(round(a, 5) for a in azimuths))  # 5° grouping
         
+        logger.info(f"🌐 DETAILED SPHERICAL COVERAGE ANALYSIS:")
+        logger.info(f"   📊 Elevation range: {min(elevations):.1f}° to {max(elevations):.1f}° (span: {elevation_range:.1f}°)")
+        logger.info(f"   📊 Azimuth range: {min(azimuths):.1f}° to {max(azimuths):.1f}° (span: {azimuth_range:.1f}°)")
+        logger.info(f"   📊 Unique elevation levels: {unique_elevations}")
+        logger.info(f"   📊 Unique azimuth directions: {unique_azimuths}")
+        
+        # Analyze elevation distribution in detail
+        elevation_groups = {}
+        for e in elevations:
+            key = round(e / 15) * 15  # Group by 15° intervals
+            elevation_groups[key] = elevation_groups.get(key, 0) + 1
+        logger.info(f"   📊 Elevation distribution: {elevation_groups}")
+        
+        # Critical spherical coverage validation
         if elevation_range < 10.0:  # Less than 10° elevation variation
-            logger.warning(f"⚠️ LIMITED ELEVATION RANGE: All images at similar elevation ({elevation_range:.1f}° range)")
-            logger.warning(f"⚠️ This will create a horizontal panorama strip, not a full 360° sphere")
-            logger.warning(f"⚠️ For full spherical panoramas, capture images at multiple elevation levels (-45°, 0°, +45°)")
-        
+            logger.error(f"❌ CRITICAL: LIMITED ELEVATION RANGE ({elevation_range:.1f}°)")
+            logger.error(f"❌ This will create a horizontal panorama strip, NOT a 360° sphere!")
+            logger.error(f"❌ Root cause: Images captured only around horizon level")
+            logger.error(f"❌ Solution: Capture images at multiple elevations (-45°, 0°, +45°)")
+            
         if unique_elevations < 2:
-            logger.warning(f"⚠️ ALL IMAGES AT SAME ELEVATION: {elevations[0]:.1f}°")
-            logger.warning(f"⚠️ Expected 3-level capture pattern with elevation variation")
+            logger.error(f"❌ CRITICAL: ALL IMAGES AT SAME ELEVATION ({elevations[0]:.1f}°)")
+            logger.error(f"❌ This guarantees horizontal strip output, not spherical panorama")
+            
+        if azimuth_range < 270:  # Less than 270° azimuth coverage
+            logger.warning(f"⚠️ LIMITED AZIMUTH RANGE ({azimuth_range:.1f}°) - may miss full 360° coverage")
         
-        logger.info(f"📊 Capture pattern analysis: {unique_elevations} unique elevation levels, {elevation_range:.1f}° total range")
+        # Expected vs actual pattern comparison
+        expected_elevations = [-45, 0, 45]  # From iOS app design
+        expected_azimuths = 8  # 8 azimuth columns
+        
+        logger.info(f"🎯 PATTERN COMPARISON:")
+        logger.info(f"   Expected: 3 elevation levels {expected_elevations}, 8 azimuth columns")
+        logger.info(f"   Actual: {unique_elevations} elevation levels, {unique_azimuths} azimuth positions")
+        
+        if unique_elevations >= 3 and elevation_range >= 60:
+            logger.info("✅ GOOD: Proper spherical coverage detected")
+        else:
+            logger.error("❌ BAD: Insufficient spherical coverage - will produce horizontal strip")
         
         with open(project_file, 'w') as f:
             # RESEARCH-BASED: Proper PTO header for iPhone ultra-wide spherical panoramas
@@ -302,11 +333,25 @@ class CorrectHuginStitcher:
                     logger.warning(f"⚠️ Invalid ARKit elevation {elevation}° for image {i}, clamping to ±90°")
                     elevation = max(-90, min(90, elevation))
                 
-                # CORRECTED: Proper coordinate mapping for 360° panoramas
-                # ARKit azimuth 0° = North, increases clockwise
-                # Hugin yaw 0° = forward, positive = right (clockwise from above)
-                # Convert ARKit azimuth to Hugin yaw with proper orientation
+                # CRITICAL FIX: ARKit coordinate system analysis and conversion
+                # ARKit coordinate system (device-relative, not geographic):
+                # - azimuth: rotation around Y axis (device standing upright)
+                # - elevation: rotation around X axis (device tilting up/down)
+                # - iPhone capture: device held in portrait OR landscape orientation
+                
+                # Hugin coordinate system (spherical panorama):
+                # - yaw: horizontal rotation (-180° to +180°, 0° = forward)
+                # - pitch: vertical rotation (-90° to +90°, 0° = horizon, +90° = up)
+                # - roll: camera rotation around optical axis (should be 0° for panoramas)
+                
+                # CORRECTED CONVERSION: Direct mapping with validation
+                # This assumes ARKit data is already in proper spherical coordinates
                 yaw = azimuth
+                
+                # CRITICAL DEBUG: Log ARKit vs Hugin coordinate mapping
+                logger.info(f"🔄 Image {i} coordinate conversion:")
+                logger.info(f"   ARKit: azimuth={azimuth:.1f}°, elevation={elevation:.1f}°")
+                logger.info(f"   → Hugin: yaw={yaw:.1f}°, pitch={elevation:.1f}°")
                 
                 # Ensure yaw is in Hugin's preferred -180 to +180 range
                 # This prevents 180° seam boundary issues
@@ -333,6 +378,33 @@ class CorrectHuginStitcher:
                     logger.warning(f"⚠️ Image {i} very close to pole: pitch={pitch:.1f}°")
                     # These images might not render properly due to extreme distortion
                 
+                # CRITICAL FIX: Get actual image dimensions instead of hardcoding
+                # iPhone images might be portrait (3024×4032) or landscape (4032×3024)
+                try:
+                    import cv2
+                    temp_img = cv2.imread(img_path)
+                    if temp_img is not None:
+                        actual_height, actual_width = temp_img.shape[:2]
+                        logger.info(f"📸 Image {i} actual dimensions: {actual_width}×{actual_height}")
+                    else:
+                        # Fallback to assumed iPhone ultra-wide dimensions
+                        actual_width, actual_height = 4032, 3024
+                        logger.warning(f"⚠️ Could not read image {i}, using default dimensions")
+                except Exception as e:
+                    actual_width, actual_height = 4032, 3024
+                    logger.warning(f"⚠️ Error reading image {i} dimensions: {e}")
+                
+                # Adjust FOV based on image orientation
+                # iPhone ultra-wide: 106.2° on the long edge
+                if actual_width > actual_height:
+                    # Landscape: use full 106.2° FOV
+                    adjusted_fov = fov
+                    logger.debug(f"📸 Image {i}: Landscape {actual_width}×{actual_height}, FOV={adjusted_fov:.1f}°")
+                else:
+                    # Portrait: adjust FOV for shorter dimension
+                    adjusted_fov = fov * (actual_height / actual_width)
+                    logger.debug(f"📸 Image {i}: Portrait {actual_width}×{actual_height}, FOV={adjusted_fov:.1f}°")
+                
                 # RESEARCH-BASED: Proper iPhone ultra-wide lens parameters
                 # iPhone Lens Correction setting affects these values:
                 # - If enabled: minimal distortion (a≈0, b≈0, c≈0)
@@ -340,7 +412,7 @@ class CorrectHuginStitcher:
                 # Let autooptimiser determine optimal values, start with iPhone defaults
                 
                 f.write(f'#-hugin  cropFactor=1\n')
-                f.write(f'i w4032 h3024 f0 v{fov} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a-0.05 b0.02 c-0.005 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
+                f.write(f'i w{actual_width} h{actual_height} f0 v{adjusted_fov:.1f} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a-0.05 b0.02 c-0.005 d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
                 
                 logger.info(f"📍 Image {i}: ARKit azimuth={azimuth:.1f}°, elevation={elevation:.1f}° → Hugin yaw={yaw:.1f}°, pitch={pitch:.1f}°")
         
