@@ -412,8 +412,9 @@ class CorrectHuginStitcher:
                 # Keep roll at zero for spherical panoramas (no camera rotation around optical axis)
                 roll_hugin = 0.0
                 
-                # Additional validation: check for problematic positions
-                if abs(yaw) > 179.5:
+                # Additional validation: check for 180° seam boundary (not just large angles)
+                # Only adjust angles very close to ±180° (the actual seam boundary)
+                if abs(abs(yaw) - 180) < 0.5:  # Within 0.5° of ±180°
                     logger.warning(f"⚠️ Image {i} very close to 180° seam boundary: yaw={yaw:.1f}°")
                     # Adjust slightly to avoid exact seam boundary
                     yaw = 179.5 if yaw > 0 else -179.5
@@ -461,9 +462,10 @@ class CorrectHuginStitcher:
                 
                 # Use EXIF-derived parameters or fallback defaults
                 # Ensure all values have proper fallbacks and are never None
-                barrel_a = lens_params.get('distortion_a') or -0.02   # Conservative fallback
-                barrel_b = lens_params.get('distortion_b') or 0.01    # Conservative fallback  
-                barrel_c = lens_params.get('distortion_c') or -0.005  # Conservative fallback
+                # Use even more conservative distortion for better control point detection
+                barrel_a = lens_params.get('distortion_a') or -0.01   # Very conservative fallback
+                barrel_b = lens_params.get('distortion_b') or 0.005   # Very conservative fallback  
+                barrel_c = lens_params.get('distortion_c') or -0.002  # Very conservative fallback
                 measured_fov = lens_params.get('fov') or adjusted_fov  # Use EXIF FOV or fallback to original
                 
                 logger.info(f"📷 EXIF-based lens parameters:")
