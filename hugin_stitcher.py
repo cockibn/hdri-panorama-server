@@ -76,7 +76,7 @@ class CorrectHuginStitcher:
                 if progress_callback:
                     progress_callback(0.15, "Generating project file...")
                 
-                project_file = self._generate_project_file(image_paths, capture_points)
+                project_file = self._generate_project_file(image_paths, capture_points, original_exif_data)
                 
                 # Step 2: Find control points (Official Hugin workflow)
                 if progress_callback:
@@ -177,7 +177,7 @@ class CorrectHuginStitcher:
         logger.info(f"📁 Saved {len(image_paths)} images")
         return image_paths
     
-    def _generate_project_file(self, image_paths: List[str], capture_points: List[Dict] = None) -> str:
+    def _generate_project_file(self, image_paths: List[str], capture_points: List[Dict] = None, original_exif_data: List = None) -> str:
         """Step 1: Generate project file with ARKit positioning data."""
         project_file = os.path.join(self.temp_dir, "project.pto")
         
@@ -204,7 +204,7 @@ class CorrectHuginStitcher:
             logger.info(f"🔍 POSITIONING DETAILS: {' | '.join(positioning_results)}")
             
             if has_positioning:
-                self._generate_positioned_project(image_paths, capture_points, project_file)
+                self._generate_positioned_project(image_paths, capture_points, project_file, original_exif_data)
             else:
                 logger.warning(f"⚠️ No valid azimuth/elevation data - falling back to basic pto_gen")
                 cmd = ["pto_gen", "-o", project_file] + image_paths
@@ -218,7 +218,7 @@ class CorrectHuginStitcher:
         logger.info(f"✅ Generated project file with {len(image_paths)} images")
         return project_file
     
-    def _generate_positioned_project(self, image_paths: List[str], capture_points: List[Dict], project_file: str):
+    def _generate_positioned_project(self, image_paths: List[str], capture_points: List[Dict], project_file: str, original_exif_data: List = None):
         """Generate PTO file with ARKit positioning data."""
         logger.info(f"🎯 Generating positioned project with {len(capture_points)} ARKit positions")
         
@@ -457,7 +457,7 @@ class CorrectHuginStitcher:
                 
                 # 📷 EXTRACT LENS PARAMETERS FROM EXIF DATA
                 # Read actual lens characteristics instead of guessing
-                lens_params = self._extract_lens_parameters_from_exif(original_exif_data, i, img_path)
+                lens_params = self._extract_lens_parameters_from_exif(original_exif_data or [], i, img_path)
                 
                 # Use EXIF-derived parameters or fallback defaults
                 barrel_a = lens_params.get('distortion_a', -0.02)  # Conservative fallback
