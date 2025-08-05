@@ -460,9 +460,10 @@ class CorrectHuginStitcher:
                 lens_params = self._extract_lens_parameters_from_exif(original_exif_data or [], i, img_path)
                 
                 # Use EXIF-derived parameters or fallback defaults
-                barrel_a = lens_params.get('distortion_a', -0.02)  # Conservative fallback
-                barrel_b = lens_params.get('distortion_b', 0.01)   # Conservative fallback  
-                barrel_c = lens_params.get('distortion_c', -0.005) # Conservative fallback
+                # Ensure all values have proper fallbacks and are never None
+                barrel_a = lens_params.get('distortion_a') or -0.02   # Conservative fallback
+                barrel_b = lens_params.get('distortion_b') or 0.01    # Conservative fallback  
+                barrel_c = lens_params.get('distortion_c') or -0.005  # Conservative fallback
                 measured_fov = lens_params.get('fov') or adjusted_fov  # Use EXIF FOV or fallback to original
                 
                 logger.info(f"📷 EXIF-based lens parameters:")
