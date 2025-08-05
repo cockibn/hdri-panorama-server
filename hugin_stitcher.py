@@ -441,15 +441,16 @@ class CorrectHuginStitcher:
                 # iPhone ultra-wide (0.5x) has significant barrel distortion that needs proper correction
                 # Research-based values for iPhone 13/14/15 Pro ultra-wide camera:
                 
-                # BARREL DISTORTION CORRECTION (stronger values needed for ultra-wide)
-                barrel_a = -0.15    # Strong negative barrel distortion correction
-                barrel_b = 0.08     # Secondary barrel correction  
-                barrel_c = -0.02    # Tertiary barrel correction
+                # BARREL DISTORTION CORRECTION (moderate values for better feature matching)
+                # Too aggressive correction can break control point detection
+                barrel_a = -0.08    # Moderate barrel distortion correction
+                barrel_b = 0.04     # Secondary barrel correction  
+                barrel_c = -0.01    # Tertiary barrel correction
                 
                 # FIELD OF VIEW CORRECTION
                 # iPhone ultra-wide actual measured FOV varies by model and lens correction setting
                 # Use more conservative FOV to reduce extreme distortion
-                conservative_fov = min(adjusted_fov * 0.85, 95.0)  # Cap at 95° to reduce distortion
+                conservative_fov = min(adjusted_fov * 0.9, 100.0)  # Less aggressive FOV reduction
                 
                 logger.info(f"🔧 Image {i} distortion correction: FOV {adjusted_fov:.1f}° → {conservative_fov:.1f}°")
                 logger.info(f"🔧 Barrel distortion: a={barrel_a:.3f}, b={barrel_b:.3f}, c={barrel_c:.3f}")
@@ -468,6 +469,34 @@ class CorrectHuginStitcher:
             logger.warning(f"⚠️ Could not read generated PTO file: {e}")
         
         logger.info(f"✅ Generated positioned PTO with ARKit data covering {len(capture_points)} viewpoints")
+    
+    def _generate_minimal_distortion_project(self, project_file: str):
+        """Regenerate PTO file with minimal distortion correction for fallback control point detection."""
+        logger.info("🔧 Regenerating PTO with minimal distortion correction...")
+        
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # Replace aggressive distortion values with minimal ones
+            import re
+            
+            # Find and replace distortion parameters (a, b, c values)
+            # Pattern matches: a-0.080 b0.040 c-0.010 (or similar values)
+            content = re.sub(r'a-?\d+\.\d+', 'a-0.02', content)  # Minimal barrel correction
+            content = re.sub(r'b-?\d+\.\d+', 'b0.01', content)   # Minimal secondary correction
+            content = re.sub(r'c-?\d+\.\d+', 'c-0.005', content) # Minimal tertiary correction
+            
+            # Also restore more conservative FOV
+            content = re.sub(r'v\d+\.\d+', 'v100.0', content)  # Conservative FOV
+            
+            with open(project_file, 'w') as f:
+                f.write(content)
+            
+            logger.info("✅ PTO regenerated with minimal distortion: a=-0.02, b=0.01, c=-0.005, v=100°")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to regenerate PTO with minimal distortion: {e}")
     
     def _find_control_points(self, project_file: str) -> str:
         """Step 2: Find control points using optimized strategy for iPhone ultra-wide captures."""
@@ -513,6 +542,17 @@ class CorrectHuginStitcher:
                     project_file
                 ],
                 "timeout": 900
+            },
+            {
+                "name": "Minimal distortion (fallback)",
+                "cmd": [
+                    "cpfind",
+                    "--multirow",
+                    "-o", cp_project,
+                    project_file
+                ],
+                "timeout": 600,
+                "rebuild_with_minimal_distortion": True  # Flag to regenerate PTO with minimal distortion
             }
         ]
         
@@ -525,6 +565,11 @@ class CorrectHuginStitcher:
                 
             logger.info(f"🔍 Trying control point strategy: {strategy['name']}")
             logger.info(f"📋 Command: {' '.join(strategy['cmd'])}")
+            
+            # Check if this strategy needs PTO rebuild with minimal distortion
+            if strategy.get("rebuild_with_minimal_distortion", False):
+                logger.warning("🔧 FALLBACK: Regenerating PTO with minimal distortion correction")
+                self._generate_minimal_distortion_project(project_file)
             
             # Remove previous attempt
             if os.path.exists(cp_project):
