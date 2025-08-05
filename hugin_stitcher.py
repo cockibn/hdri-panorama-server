@@ -647,11 +647,12 @@ class CorrectHuginStitcher:
             ]
             
             logger.info("📋 Command: autooptimiser -a -m -l -s (full optimization)")
-        
-        self._run_command(cmd, "autooptimiser")
+            # Run autooptimiser for non-ARKit data
+            self._run_command(cmd, "autooptimiser")
         
         # Verify optimization didn't cluster images or flatten elevations
-        self._analyze_optimization_results(project_file, opt_project)
+        if not has_arkit:
+            self._analyze_optimization_results(project_file, opt_project)
         
         # CRITICAL CHECK: Ensure we still have elevation variation after optimization
         final_positions = self._extract_image_positions(opt_project)
