@@ -463,15 +463,19 @@ class CorrectHuginStitcher:
                 barrel_a = lens_params.get('distortion_a', -0.02)  # Conservative fallback
                 barrel_b = lens_params.get('distortion_b', 0.01)   # Conservative fallback  
                 barrel_c = lens_params.get('distortion_c', -0.005) # Conservative fallback
-                measured_fov = lens_params.get('fov', adjusted_fov)  # Use EXIF FOV or original
+                measured_fov = lens_params.get('fov') or adjusted_fov  # Use EXIF FOV or fallback to original
                 
                 logger.info(f"📷 EXIF-based lens parameters:")
-                logger.info(f"   📐 FOV: {measured_fov:.1f}° (from EXIF: {lens_params.get('fov_source', 'fallback')})")
+                fov_str = f"{measured_fov:.1f}°" if measured_fov is not None else "None (using fallback)"
+                logger.info(f"   📐 FOV: {fov_str} (from EXIF: {lens_params.get('fov_source', 'fallback')})")
                 logger.info(f"   🔧 Distortion: a={barrel_a:.3f}, b={barrel_b:.3f}, c={barrel_c:.3f}")
                 logger.info(f"   📋 Lens: {lens_params.get('lens_model', 'Unknown')}")
                 
+                # Ensure measured_fov is never None for PTO file
+                final_fov = measured_fov if measured_fov is not None else adjusted_fov
+                
                 f.write(f'#-hugin  cropFactor=1\n')
-                f.write(f'i w{actual_width} h{actual_height} f0 v{measured_fov:.1f} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a{barrel_a:.3f} b{barrel_b:.3f} c{barrel_c:.3f} d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
+                f.write(f'i w{actual_width} h{actual_height} f0 v{final_fov:.1f} Ra0 Rb0 Rc0 Rd0 Re0 Eev0 Er1 Eb1 r{roll_hugin:.6f} p{pitch:.6f} y{yaw:.6f} TrX0 TrY0 TrZ0 Tpy0 Tpp0 j0 a{barrel_a:.3f} b{barrel_b:.3f} c{barrel_c:.3f} d0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0  Vm5 n"{img_path}"\n')
         
         # Log the generated PTO file for analysis
         try:
