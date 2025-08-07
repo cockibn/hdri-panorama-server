@@ -1205,27 +1205,27 @@ class CorrectHuginStitcher:
             {
                 "name": "360° optimized",
                 "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--compression=LZW"] + tiff_files,
-                "timeout": 400
+                "timeout": 1200  # Increased from 400s to 20 minutes for high-quality iPhone processing
             },
             {
                 "name": "360° with no optimize",
                 "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--no-optimize", "--compression=LZW"] + tiff_files,
-                "timeout": 500
+                "timeout": 800  # Increased from 500s for better reliability
             },
             {
                 "name": "360° reduced levels",
                 "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--levels=3", "--no-optimize", "--compression=LZW"] + tiff_files,
-                "timeout": 600
+                "timeout": 900  # Increased from 600s
             },
             {
                 "name": "360° minimal levels",
                 "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--levels=2", "--no-optimize", "--compression=LZW"] + tiff_files,
-                "timeout": 700
+                "timeout": 1000  # Increased from 700s
             },
             {
                 "name": "Basic fallback",
                 "cmd": ["enblend", "-o", tiff_output, "--no-optimize"] + tiff_files,
-                "timeout": 800
+                "timeout": 600  # Reduced as emergency fallback should be fast
             }
         ]
         
