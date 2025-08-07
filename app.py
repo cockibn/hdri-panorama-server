@@ -168,7 +168,7 @@ class PanoramaProcessor:
         self.stitcher = CorrectHuginStitcher(output_resolution=resolution)
         logger.info(f"Official Hugin stitcher initialized with {resolution} resolution.")
 
-    def process_session(self, job_id: str, session_data: dict, image_files: List[str]):
+    def process_session(self, job_id: str, session_data: dict, image_files: List[str], base_url: str = None):
         """Process a complete panorama session using the Hugin engine."""
         try:
             self._update_job_status(job_id, JobState.PROCESSING, 0.0, "Loading and preparing images...")
@@ -318,14 +318,11 @@ class PanoramaProcessor:
                 pil_image.save(str(preview_path), 'JPEG', quality=85, optimize=True)
                 logger.info("📱 JPEG preview saved without metadata")
             
-            # Fix BASE_URL for local development - use request.host_url if no env var
-            base_url = os.environ.get('BASE_URL')
-            if not base_url:
-                base_url = request.host_url.rstrip('/')
-            else:
-                base_url = base_url.rstrip('/')
-            result_url = f"{base_url}/v1/panorama/result/{job_id}"
-            preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
+            # Use BASE_URL from environment or parameter passed from request context
+            final_base_url = base_url or os.environ.get('BASE_URL') or 'http://localhost:5001'
+            final_base_url = final_base_url.rstrip('/')
+            result_url = f"{final_base_url}/v1/panorama/result/{job_id}"
+            preview_url = f"{final_base_url}/v1/panorama/preview/{job_id}"
             
             logger.info(f"🎉 iPhone-optimized HDR panorama processing completed successfully!")
             logger.info(f"📥 Download EXR: {result_url}")
@@ -633,7 +630,14 @@ def process_panorama():
         logger.error("No images found in bundle - extraction failed")
         return jsonify({"error": "No images found in bundle"}), 400
     
-    thread = threading.Thread(target=job_processor.process_session, args=(job_id, session_metadata, image_files))
+    # Get base URL from request context (where it's available) before starting background thread
+    request_base_url = os.environ.get('BASE_URL')
+    if not request_base_url:
+        request_base_url = request.host_url.rstrip('/')
+    else:
+        request_base_url = request_base_url.rstrip('/')
+    
+    thread = threading.Thread(target=job_processor.process_session, args=(job_id, session_metadata, image_files, request_base_url))
     thread.daemon = True
     thread.start()
     
