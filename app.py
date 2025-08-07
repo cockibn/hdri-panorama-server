@@ -331,11 +331,19 @@ class PanoramaProcessor:
             self._update_job_status(job_id, JobState.FAILED, 0.0, f"Error: {e}")
 
     def _load_and_orient_image(self, img_path: str) -> Optional[np.ndarray]:
-        """Load an image and correct its orientation using EXIF data."""
+        """Load image with proper EXIF orientation handling for Hugin processing."""
         try:
             pil_image = Image.open(img_path)
+            # QUALITY FIX: Handle orientation properly for maximum quality preservation
+            # iOS now sends original camera data - apply EXIF orientation once, correctly
             oriented_image = ImageOps.exif_transpose(pil_image)
-            return cv2.cvtColor(np.array(oriented_image), cv2.COLOR_RGB2BGR)
+            result = cv2.cvtColor(np.array(oriented_image), cv2.COLOR_RGB2BGR)
+            
+            # Log image dimensions to verify orientation handling
+            height, width = result.shape[:2]
+            logger.info(f"📸 Loaded image: {width}×{height} (orientation-corrected from EXIF)")
+            
+            return result
         except Exception as e:
             logger.error(f"Failed to load image {img_path}: {e}")
             return None
@@ -529,7 +537,14 @@ def process_panorama():
         if sample_img is not None:
             h, w = sample_img.shape[:2]
             file_size = os.path.getsize(image_files[0])
-            logger.info(f"📸 Input image quality - Resolution: {w}x{h}, File size: {file_size} bytes")
+            # QUALITY ASSESSMENT: Analyze input image quality after iOS fix
+            quality_metric = file_size / (w * h)  # Bytes per pixel (rough quality indicator)
+            logger.info(f"📸 QUALITY ANALYSIS - Resolution: {w}x{h}, File size: {file_size} bytes, Quality metric: {quality_metric:.2f} bytes/pixel")
+            
+            if quality_metric < 0.5:
+                logger.warning(f"⚠️ Low quality detected: {quality_metric:.2f} bytes/pixel (expected >1.0 for high quality)")
+            else:
+                logger.info(f"✅ Good input quality: {quality_metric:.2f} bytes/pixel")
             logger.info(f"📸 Compression ratio: {file_size/(w*h*3):.3f} bytes/pixel")
     
     if not image_files:

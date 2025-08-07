@@ -166,15 +166,21 @@ class CorrectHuginStitcher:
             raise
     
     def _save_images(self, images: List[np.ndarray]) -> List[str]:
-        """Save images to temporary directory."""
+        """Save images to temporary directory with maximum quality preservation."""
         image_paths = []
         
         for i, img in enumerate(images):
             path = os.path.join(self.temp_dir, f"img_{i:04d}.jpg")
-            cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            # QUALITY FIX: Use maximum quality for Hugin input
+            # Since iOS no longer double-compresses, we can maintain higher quality
+            cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 98])
             image_paths.append(path)
+            
+            # Log image quality info
+            height, width = img.shape[:2]
+            logger.info(f"📸 Saved image {i}: {width}×{height} at 98% quality")
         
-        logger.info(f"📁 Saved {len(image_paths)} images")
+        logger.info(f"📁 QUALITY PRESERVATION: Saved {len(image_paths)} high-quality images for Hugin processing")
         return image_paths
     
     def _generate_project_file(self, image_paths: List[str], capture_points: List[Dict] = None, original_exif_data: List = None) -> str:
