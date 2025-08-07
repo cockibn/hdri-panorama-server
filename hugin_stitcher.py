@@ -45,7 +45,7 @@ class CorrectHuginStitcher:
     
     def _verify_hugin_installation(self):
         """Verify required Hugin tools are available."""
-        required_tools = ['pto_gen', 'cpfind', 'cpclean', 'linefind', 'autooptimiser', 'pano_modify', 'nona', 'enblend']
+        required_tools = ['pto_gen', 'cpfind', 'cpclean', 'linefind', 'autooptimiser', 'pano_modify', 'nona', 'enblend', 'geocpset']
         
         for tool in required_tools:
             try:

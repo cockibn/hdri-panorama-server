@@ -243,10 +243,13 @@ class PanoramaProcessor:
             aspect_ratio = width / height
             logger.info(f"📊 Panorama dimensions: {width}×{height}, aspect ratio: {aspect_ratio:.2f}")
             
-            if abs(aspect_ratio - 2.0) > 0.1:  # Should be 2:1 for equirectangular
-                logger.error(f"❌ INVALID ASPECT RATIO: {aspect_ratio:.2f} (should be 2.0 for 360° photospheres)")
-                logger.error("❌ This panorama will NOT display correctly in 360° viewers!")
-                logger.error("❌ Check crop mode settings - AUTO crop destroys photosphere compatibility")
+            # Handle aspect ratio - pad to 2:1 for photosphere compatibility if needed
+            if abs(aspect_ratio - 2.0) > 0.1:  # Not 2:1 ratio
+                logger.warning(f"⚠️ Aspect ratio {aspect_ratio:.2f} - padding to 2:1 for photosphere compatibility")
+                panorama = self._pad_to_photosphere_ratio(panorama)
+                height, width = panorama.shape[:2]
+                new_aspect_ratio = width / height
+                logger.info(f"✅ Padded to {width}×{height} (aspect ratio: {new_aspect_ratio:.2f})")
             else:
                 logger.info("✅ Valid 2:1 aspect ratio for 360° photosphere")
             
@@ -305,13 +308,22 @@ class PanoramaProcessor:
             try:
                 exif_bytes = piexif.dump(exif_dict)
                 pil_image.save(str(preview_path), 'JPEG', quality=85, optimize=True, exif=exif_bytes)
-                logger.info("📱 JPEG preview saved with 360° photosphere metadata")
+                
+                # Add proper GPano XMP metadata with exiftool if available
+                self._embed_gpano_metadata(str(preview_path), width, height)
+                
+                logger.info("📱 JPEG preview saved with EXIF metadata and GPano XMP tags")
             except Exception as e:
                 logger.warning(f"⚠️ Could not add photosphere metadata: {e}")
                 pil_image.save(str(preview_path), 'JPEG', quality=85, optimize=True)
                 logger.info("📱 JPEG preview saved without metadata")
             
-            base_url = os.environ.get('BASE_URL', 'https://hdri-panorama-server-production.up.railway.app').rstrip('/')
+            # Fix BASE_URL for local development - use request.host_url if no env var
+            base_url = os.environ.get('BASE_URL')
+            if not base_url:
+                base_url = request.host_url.rstrip('/')
+            else:
+                base_url = base_url.rstrip('/')
             result_url = f"{base_url}/v1/panorama/result/{job_id}"
             preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
             
@@ -329,6 +341,76 @@ class PanoramaProcessor:
         except Exception as e:
             logger.exception(f"Processing failed for job {job_id}")
             self._update_job_status(job_id, JobState.FAILED, 0.0, f"Error: {e}")
+
+    def _embed_gpano_metadata(self, image_path: str, width: int, height: int):
+        """Embed proper GPano XMP metadata using exiftool for 360° compatibility."""
+        try:
+            import subprocess
+            import shutil
+            
+            # Check if exiftool is available
+            if not shutil.which('exiftool'):
+                logger.warning("⚠️ exiftool not found - GPano XMP metadata not embedded")
+                logger.info("💡 Install exiftool for full 360° viewer compatibility")
+                return
+            
+            # Use exiftool to embed GPano XMP metadata
+            cmd = [
+                'exiftool',
+                '-overwrite_original',
+                f'-XMP-GPano:ProjectionType=equirectangular',
+                f'-XMP-GPano:UsePanoramaViewer=True',
+                f'-XMP-GPano:CroppedAreaImageWidthPixels={width}',
+                f'-XMP-GPano:CroppedAreaImageHeightPixels={height}',
+                f'-XMP-GPano:FullPanoWidthPixels={width}',
+                f'-XMP-GPano:FullPanoHeightPixels={height}',
+                f'-XMP-GPano:CroppedAreaLeftPixels=0',
+                f'-XMP-GPano:CroppedAreaTopPixels=0',
+                f'-XMP-GPano:PoseHeadingDegrees=0',
+                image_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                logger.info("✅ GPano XMP metadata successfully embedded with exiftool")
+            else:
+                logger.warning(f"⚠️ exiftool failed: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("⚠️ exiftool timeout - GPano metadata may be incomplete")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to embed GPano metadata: {e}")
+
+    def _pad_to_photosphere_ratio(self, panorama: np.ndarray) -> np.ndarray:
+        """Pad panorama to 2:1 aspect ratio for photosphere compatibility."""
+        try:
+            height, width = panorama.shape[:2]
+            target_width = height * 2  # 2:1 aspect ratio
+            
+            if width >= target_width:
+                # Already wide enough or too wide - center crop to 2:1
+                crop_width = height * 2
+                start_x = (width - crop_width) // 2
+                return panorama[:, start_x:start_x + crop_width]
+            else:
+                # Too narrow - pad horizontally with black
+                pad_total = target_width - width
+                pad_left = pad_total // 2
+                pad_right = pad_total - pad_left
+                
+                if len(panorama.shape) == 3:
+                    # Color image
+                    padding = ((0, 0), (pad_left, pad_right), (0, 0))
+                else:
+                    # Grayscale image
+                    padding = ((0, 0), (pad_left, pad_right))
+                
+                return np.pad(panorama, padding, mode='constant', constant_values=0)
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to pad panorama: {e}")
+            return panorama
 
     def _load_and_orient_image(self, img_path: str) -> Optional[np.ndarray]:
         """Load image with proper EXIF orientation handling for Hugin processing."""
