@@ -82,7 +82,7 @@ class CorrectHuginStitcher:
                 if progress_callback:
                     progress_callback(0.30, "Finding control points...")
                 
-                cp_project = self._find_control_points(project_file)
+                cp_project = self._find_control_points(project_file, len(images))
                 self.control_points_found = self._count_control_points(cp_project)
                 
                 # Step 3: Clean control points (Official Hugin workflow)
@@ -113,13 +113,13 @@ class CorrectHuginStitcher:
                 if progress_callback:
                     progress_callback(0.80, "Rendering images...")
                 
-                tiff_files = self._render_images(final_project)
+                tiff_files = self._render_images(final_project, len(images))
                 
                 # Step 7: Blend with enblend
                 if progress_callback:
                     progress_callback(0.95, "Blending final panorama...")
                 
-                panorama_path = self._blend_images(tiff_files)
+                panorama_path = self._blend_images(tiff_files, len(images))
                 
                 # Load and return result
                 logger.info(f"📁 Loading final panorama from: {panorama_path}")
@@ -135,21 +135,37 @@ class CorrectHuginStitcher:
                 
                 panorama = cv2.imread(panorama_path, cv2.IMREAD_UNCHANGED)
                 if panorama is None:
-                    # Try different loading methods
-                    logger.warning("⚠️ Standard CV2 loading failed, trying alternatives...")
+                    # Try different loading methods for EXR files
+                    logger.warning("⚠️ OpenCV loading failed - trying EXR-compatible alternatives...")
                     
-                    # Try loading as TIFF with PIL
+                    # Try imageio for EXR files (better EXR support than PIL)
                     try:
-                        from PIL import Image
-                        import numpy as np
-                        pil_image = Image.open(panorama_path)
-                        panorama = np.array(pil_image)
-                        if len(panorama.shape) == 3:
-                            panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
-                        logger.info(f"✅ Loaded with PIL: {panorama.shape}")
+                        import imageio
+                        panorama = imageio.imread(panorama_path)
+                        logger.info(f"✅ Loaded EXR with imageio: {panorama.shape}")
+                        # Convert RGB to BGR for consistency with OpenCV
+                        if len(panorama.shape) == 3 and panorama.shape[2] >= 3:
+                            panorama = panorama[:, :, ::-1]  # RGB to BGR
+                    except ImportError:
+                        logger.warning("⚠️ imageio not available - install imageio for better EXR support")
+                        try:
+                            # Last resort: PIL for TIFF (won't work for EXR but worth trying)
+                            from PIL import Image
+                            import numpy as np
+                            pil_image = Image.open(panorama_path)
+                            panorama = np.array(pil_image)
+                            if len(panorama.shape) == 3:
+                                panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+                            logger.info(f"✅ Loaded with PIL: {panorama.shape}")
+                        except Exception as e:
+                            logger.error(f"❌ All loading methods failed: {e}")
+                            logger.info(f"📁 Panorama file created successfully at: {panorama_path}")
+                            logger.info("💡 Consider installing imageio for EXR support: pip install imageio")
+                            # Still raise error as the function expects to return an array
+                            raise RuntimeError(f"Failed to load panorama array - file exists at {panorama_path}")
                     except Exception as e:
-                        logger.error(f"❌ PIL loading also failed: {e}")
-                        raise RuntimeError(f"Failed to load final panorama with both CV2 and PIL: {e}")
+                        logger.error(f"❌ imageio loading failed: {e}")
+                        raise RuntimeError(f"EXR loading failed with imageio: {e}")
                 
                 processing_time = time.time() - start_time
                 quality_metrics = self._calculate_quality_metrics(panorama, len(images), processing_time)
@@ -332,7 +348,7 @@ class CorrectHuginStitcher:
             # RESEARCH-BASED: Proper PTO header for iPhone ultra-wide spherical panoramas
             f.write("# hugin project file\n")
             f.write("#hugin_ptoversion 2\n")
-            f.write(f"p f0 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 n\"TIFF_m c:LZW\"\n")
+            f.write(f"p f2 w{self.canvas_size[0]} h{self.canvas_size[1]} v360 n\"TIFF_m c:LZW\"\n")
             f.write("m g1 i0 f0 m2 p0.00784314\n")
             f.write("\n# image lines\n")
             
@@ -601,7 +617,7 @@ class CorrectHuginStitcher:
         except Exception as e:
             logger.error(f"❌ Failed to regenerate PTO with minimal distortion: {e}")
     
-    def _find_control_points(self, project_file: str) -> str:
+    def _find_control_points(self, project_file: str, image_count: int) -> str:
         """Step 2: Find control points using optimized strategy for iPhone ultra-wide captures."""
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
@@ -707,8 +723,9 @@ class CorrectHuginStitcher:
         logger.info(f"🎯 Final result: {best_cp_count} control points using best strategy")
         
         # RESEARCH-BASED: Verify connectivity for all images
-        if best_cp_count < 80:  # Minimum ~5 points per image pair for 16 images
-            logger.error(f"❌ CRITICAL: VERY LOW CONTROL POINT COUNT: {best_cp_count}")
+        min_cp_count = max(20, image_count * 5)  # Minimum ~5 points per image, at least 20 total
+        if best_cp_count < min_cp_count:
+            logger.error(f"❌ CRITICAL: VERY LOW CONTROL POINT COUNT: {best_cp_count} (minimum {min_cp_count} for {image_count} images)")
             logger.error("❌ This will cause poor stitching quality and missing images")
             logger.error("❌ Feature detection is failing on iPhone ultra-wide images")
         elif best_cp_count >= 150:
@@ -945,7 +962,7 @@ class CorrectHuginStitcher:
             
             # Replace v179 (or any v value) with v360 for full spherical coverage
             import re
-            content = re.sub(r'p f0 w(\d+) h(\d+) v\d+', r'p f0 w\1 h\2 v360', content)
+            content = re.sub(r'p f[0-2] w(\d+) h(\d+) v\d+', r'p f2 w\1 h\2 v360', content)
             
             # CRITICAL FIX: Handle 180° seam boundary issue
             # Find images positioned exactly at 180° and adjust them slightly to avoid wraparound problems
@@ -989,7 +1006,7 @@ class CorrectHuginStitcher:
         except Exception as e:
             logger.warning(f"⚠️ Could not force spherical FOV or fix seam boundaries: {e}")
     
-    def _render_images(self, project_file: str) -> List[str]:
+    def _render_images(self, project_file: str, expected_count: int) -> List[str]:
         """Step 6: Render images using nona."""
         output_prefix = os.path.join(self.temp_dir, "rendered")
         
@@ -1157,9 +1174,9 @@ class CorrectHuginStitcher:
             if file_size < 1000:  # Very small file likely empty
                 logger.warning(f"⚠️ Rendered image {i} is suspiciously small: {file_size} bytes")
         
-        logger.info(f"🗺️ Rendered {len(tiff_paths)} images (expected 16)")
-        if len(tiff_paths) < 10:
-            logger.warning(f"⚠️ Only {len(tiff_paths)} images rendered from 16 input images - check ARKit positioning or canvas bounds")
+        logger.info(f"🗺️ Rendered {len(tiff_paths)} images (expected {expected_count})")
+        if len(tiff_paths) < expected_count - 2:  # Allow for 1-2 missing images
+            logger.warning(f"⚠️ Only {len(tiff_paths)} images rendered from {expected_count} input images - check ARKit positioning or canvas bounds")
             
             # Debug: Analyze why only few images rendered
             logger.info(f"🔍 DEBUG: Analyzing why only {len(tiff_paths)} images rendered:")
@@ -1182,7 +1199,7 @@ class CorrectHuginStitcher:
         
         return tiff_paths
     
-    def _blend_images(self, tiff_files: List[str]) -> str:
+    def _blend_images(self, tiff_files: List[str], expected_count: int) -> str:
         """Step 7: Blend images using enblend, then convert to EXR."""
         tiff_output = os.path.join(self.temp_dir, "final_panorama.tif")
         exr_output = os.path.join(self.temp_dir, "final_panorama.exr")
@@ -1190,7 +1207,7 @@ class CorrectHuginStitcher:
         # Log image information for debugging
         logger.info(f"📋 Blending {len(tiff_files)} rendered images for 360° panorama")
         missing_images = []
-        for i in range(16):
+        for i in range(expected_count):
             expected_file = os.path.join(self.temp_dir, f"rendered{i:04d}.tif")
             if not os.path.exists(expected_file):
                 missing_images.append(i)
