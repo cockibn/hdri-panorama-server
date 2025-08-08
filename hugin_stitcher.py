@@ -656,15 +656,15 @@ class CorrectHuginStitcher:
         # Progressive strategy: try iPhone-optimized approach first, then fallbacks
         strategies = [
             {
-                "name": "iPhone ultra-wide optimized (fixed distortion)",
+                "name": "Ultra-wide aggressive matching",
                 "cmd": [
                     "cpfind",
                     "--multirow",                    # Multi-row panorama detection
-                    "--sieve1-width=15",            # More relaxed for corrected distortion
-                    "--sieve1-height=15",
-                    "--sieve1-size=200",            # More control points after distortion correction
-                    "--threshold=0.5",              # Lower threshold - corrected distortion should improve matching
-                    "--celeste",                    # Sky/cloud masking
+                    "--sieve1-width=10",            # More aggressive - ultra-wide has good overlap
+                    "--sieve1-height=10",
+                    "--sieve1-size=400",            # Many more control points for ultra-wide
+                    "--threshold=0.3",              # Lower threshold - find more matches
+                    "--ransac-threshold=15",        # More tolerant geometric verification
                     "--kdtree",                     # Better feature matching algorithm
                     "-o", cp_project,
                     project_file
@@ -672,16 +672,20 @@ class CorrectHuginStitcher:
                 "timeout": 900
             },
             {
-                "name": "Relaxed matching",
+                "name": "Ultra-wide maximum overlap detection", 
                 "cmd": [
                     "cpfind",
                     "--multirow",
-                    "--sieve1-size=200",            # Even more points
-                    "--threshold=0.5",              # Very relaxed threshold
+                    "--sieve1-width=5",             # Very aggressive for ultra-wide
+                    "--sieve1-height=5",
+                    "--sieve1-size=800",            # Maximum control points
+                    "--threshold=0.15",             # Very low threshold
+                    "--ransac-threshold=25",        # Very tolerant geometry
+                    "--celeste",                    # Sky masking
                     "-o", cp_project,
                     project_file
                 ],
-                "timeout": 1200
+                "timeout": 1500
             },
             {
                 "name": "Basic (official)",
@@ -946,14 +950,17 @@ class CorrectHuginStitcher:
         logger.info(f"📐 Canvas: {self.canvas_size[0]}×{self.canvas_size[1]} (2:1 aspect ratio)")
         logger.info(f"✅ iOS coordinate mapping ensures proper orientation")
         
-        # Complete pano_modify command with equirectangular projection
+        # Complete pano_modify command with equirectangular projection and pole filling
         cmd = [
             "pano_modify",
             f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",  # Set canvas size
             f"--projection={projection_type}",                        # Equirectangular projection
+            "--crop=AUTO",                                            # Let Hugin fill gaps automatically
             "-o", final_project,
             project_file
         ]
+        
+        logger.info("🔧 Using AUTO crop mode for gap filling and pole coverage")
         
         self._run_command(cmd, "pano_modify")
         
