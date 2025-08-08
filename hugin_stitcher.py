@@ -1220,7 +1220,12 @@ class CorrectHuginStitcher:
             {
                 "name": "360° optimized",
                 "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--compression=LZW"] + tiff_files,
-                "timeout": 1200  # Increased from 400s to 20 minutes for high-quality iPhone processing
+                "timeout": 2400  # Increased to 40 minutes for complex post-orientation-fix processing
+            },
+            {
+                "name": "360° optimized with reduced levels",
+                "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--levels=4", "--compression=LZW"] + tiff_files,
+                "timeout": 1800  # 30 minutes - balance between quality and speed
             },
             {
                 "name": "360° with no optimize",
