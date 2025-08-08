@@ -61,6 +61,8 @@ class CorrectHuginStitcher:
         """
         Official Hugin panorama workflow based on 2024 documentation.
         """
+        # Store progress callback for use in enblend progress tracking
+        self.progress_callback = progress_callback
         start_time = time.time()
         
         try:
@@ -1262,7 +1264,7 @@ class CorrectHuginStitcher:
                 os.remove(tiff_output)
                 
             try:
-                self._run_command(strategy["cmd"], f"enblend ({strategy['name']})", timeout=strategy["timeout"])
+                self._run_enblend_with_progress(strategy["cmd"], f"enblend ({strategy['name']})", timeout=strategy["timeout"])
                 if os.path.exists(tiff_output) and os.path.getsize(tiff_output) > 0:
                     logger.info(f"✅ Enblend strategy '{strategy['name']}' succeeded!")
                     success = True
@@ -1486,6 +1488,118 @@ class CorrectHuginStitcher:
             
         except Exception:
             return False
+    
+    def _run_enblend_with_progress(self, cmd: List[str], tool_name: str, timeout: int = 300):
+        """Run enblend command with progress tracking via heartbeat updates."""
+        import threading
+        import time
+        
+        cmd_str = ' '.join(cmd)
+        logger.info(f"🔧 Running {tool_name}: {cmd_str}")
+        
+        # Extract output file for size monitoring
+        output_file = None
+        for i, arg in enumerate(cmd):
+            if arg == "-o" and i + 1 < len(cmd):
+                output_file = cmd[i + 1]
+                break
+        
+        start_time = time.time()
+        process = None
+        
+        try:
+            # Start the process
+            process = subprocess.Popen(
+                cmd,
+                cwd=self.temp_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Progress monitoring loop
+            last_update = 0
+            heartbeat_interval = 15  # Update every 15 seconds
+            
+            while process.poll() is None:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                
+                # Send progress update every 15 seconds
+                if current_time - last_update >= heartbeat_interval:
+                    # Calculate estimated progress based on elapsed time vs timeout
+                    time_progress = min(elapsed / timeout, 0.95)  # Cap at 95%
+                    
+                    # Check file size if available
+                    file_info = ""
+                    if output_file and os.path.exists(output_file):
+                        try:
+                            file_size = os.path.getsize(output_file)
+                            file_info = f" ({file_size // 1024 // 1024}MB written)"
+                        except:
+                            pass
+                    
+                    # Format elapsed time
+                    elapsed_min = int(elapsed // 60)
+                    elapsed_sec = int(elapsed % 60)
+                    
+                    # Update progress with heartbeat
+                    progress_message = f"Blending: {elapsed_min}m {elapsed_sec}s elapsed{file_info}"
+                    logger.info(f"🔄 {tool_name}: {progress_message}")
+                    
+                    # Call progress callback if available (passed from main processing)
+                    if hasattr(self, 'progress_callback') and self.progress_callback:
+                        # Map to 95-99% range during blending
+                        mapped_progress = 0.95 + (time_progress * 0.04)
+                        self.progress_callback(mapped_progress, progress_message)
+                    
+                    last_update = current_time
+                
+                # Check for timeout
+                if elapsed > timeout:
+                    process.terminate()
+                    time.sleep(2)  # Give it time to terminate gracefully
+                    if process.poll() is None:
+                        process.kill()  # Force kill if needed
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                
+                # Short sleep to avoid busy waiting
+                time.sleep(1)
+            
+            # Process completed, get result
+            stdout, stderr = process.communicate()
+            
+            if process.returncode != 0:
+                error_msg = f"{tool_name} failed (return code {process.returncode})"
+                if stderr:
+                    logger.error(f"📄 {tool_name} stderr: {stderr[:500]}")
+                    error_msg += f": {stderr[:200]}"
+                raise subprocess.CalledProcessError(process.returncode, cmd, stderr)
+            
+            # Success logging
+            elapsed_total = time.time() - start_time
+            elapsed_min = int(elapsed_total // 60)
+            elapsed_sec = int(elapsed_total % 60)
+            logger.info(f"✅ {tool_name} completed successfully in {elapsed_min}m {elapsed_sec}s")
+            
+            if stdout and len(stdout.strip()) > 0:
+                logger.debug(f"📄 {tool_name} stdout: {stdout[:500]}")
+            
+            return stdout, stderr
+            
+        except subprocess.TimeoutExpired:
+            if process:
+                process.terminate()
+                time.sleep(2)
+                if process.poll() is None:
+                    process.kill()
+            elapsed = time.time() - start_time
+            raise RuntimeError(f"{tool_name} timed out after {elapsed:.0f}s")
+            
+        except Exception as e:
+            if process and process.poll() is None:
+                process.terminate()
+            raise RuntimeError(f"{tool_name} failed: {str(e)}")
     
     def _run_command(self, cmd: List[str], tool_name: str, timeout: int = 300):
         """Run Hugin command with error handling."""
