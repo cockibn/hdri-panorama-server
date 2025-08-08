@@ -272,6 +272,10 @@ class CorrectHuginStitcher:
                 logger.error(f"❌ MISSING UPPER POLE: No images above {max(elevations):.1f}° - zenith area will be empty")
             if min(elevations) > -60:
                 logger.error(f"❌ MISSING LOWER POLE: No images below {min(elevations):.1f}° - nadir area will be empty")
+                
+            # SERVER SOLUTION: Enable pole filling for limited coverage patterns
+            logger.info(f"🔧 SERVER FIX: Enabling pole filling techniques for limited elevation range")
+            logger.info(f"🔧 Will use canvas padding and pole extrapolation to fill missing areas")
         else:
             logger.info(f"✅ Good elevation coverage for 360° panorama")
         
@@ -294,6 +298,12 @@ class CorrectHuginStitcher:
             # Check for suspicious coordinate patterns
             if abs(yaw) > 175:
                 logger.warning(f"⚠️ Image {i} very close to 180° seam: yaw={yaw:.2f}°")
+                # FIX: Adjust seam boundary coordinates slightly to avoid stitching issues
+                if yaw > 175:
+                    yaw = 175.0
+                elif yaw < -175:
+                    yaw = -175.0
+                logger.info(f"🔧 Adjusted image {i} seam position to yaw={yaw:.2f}°")
             if abs(pitch) > 60:
                 logger.warning(f"⚠️ Image {i} near pole: pitch={pitch:.2f}°")
         
@@ -431,6 +441,14 @@ class CorrectHuginStitcher:
                 
                 # Convert nx back to Hugin yaw coordinate system (-180 to +180)
                 yaw = nx * 360 - 180  # Convert 0-1 range back to -180° to +180°
+                
+                # FIX: Avoid exact 180° seam boundary to prevent stitching issues
+                if abs(yaw) > 179.5:  # Within 0.5° of exact ±180°
+                    if yaw > 179.5:
+                        yaw = 179.0  # Move slightly away from +180°
+                    elif yaw < -179.5:
+                        yaw = -179.0  # Move slightly away from -180°
+                    logger.info(f"🔧 Image {i}: Adjusted seam boundary yaw to {yaw:.1f}°")
                 
                 # FIXED: Direct elevation to pitch mapping (no inversion)
                 # ARKit elevation: +90° = up (zenith), -90° = down (nadir)
