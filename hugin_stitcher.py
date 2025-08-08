@@ -416,11 +416,14 @@ class CorrectHuginStitcher:
                 # Convert nx back to Hugin yaw coordinate system (-180 to +180)
                 yaw = nx * 360 - 180  # Convert 0-1 range back to -180° to +180°
                 
-                # iOS elevation mapping with Y-axis inversion
-                ny = (elevation + 90) / 180  # iOS mapping: elevation → normalized Y
-                # iOS does: y = (1 - ny) * height, which inverts the Y-axis
-                # For Hugin pitch, we need to account for this inversion
-                pitch = (1 - ny) * 180 - 90  # Reproduce iOS Y-inversion in pitch
+                # FIXED: Direct elevation to pitch mapping (no inversion)
+                # ARKit elevation: +90° = up (zenith), -90° = down (nadir)
+                # Hugin pitch: +90° = up (zenith), -90° = down (nadir)
+                # Both use same sign convention - NO INVERSION NEEDED
+                pitch = elevation  # Direct mapping: ARKit elevation = Hugin pitch
+                
+                # Calculate normalized Y for logging (iOS reference)
+                ny = (elevation + 90) / 180  # For reference/logging only
                 
                 logger.info(f"🎯 EXACT iOS equirectangular mapping reproduction:")
                 logger.info(f"   📍 ARKit: azimuth={azimuth:.1f}°, elevation={elevation:.1f}°")
@@ -466,16 +469,11 @@ class CorrectHuginStitcher:
                     actual_width, actual_height = 4032, 3024
                     logger.warning(f"⚠️ Error reading image {i} dimensions: {e}")
                 
-                # Adjust FOV based on image orientation
-                # iPhone ultra-wide: 106.2° on the long edge
-                if actual_width > actual_height:
-                    # Landscape: use full 106.2° FOV
-                    adjusted_fov = fov
-                    logger.debug(f"📸 Image {i}: Landscape {actual_width}×{actual_height}, FOV={adjusted_fov:.1f}°")
-                else:
-                    # Portrait: adjust FOV for shorter dimension
-                    adjusted_fov = fov * (actual_height / actual_width)
-                    logger.debug(f"📸 Image {i}: Portrait {actual_width}×{actual_height}, FOV={adjusted_fov:.1f}°")
+                # FIXED: Constant horizontal FOV regardless of orientation  
+                # The lens HFOV doesn't change with device rotation - it's a physical property
+                # iPhone ultra-wide: 106.2° horizontal FOV (constant)
+                adjusted_fov = fov  # Use constant FOV - orientation handled by EXIF
+                logger.debug(f"📸 Image {i}: {actual_width}×{actual_height}, FOV={adjusted_fov:.1f}° (constant HFOV)")
                 
                 # CRITICAL FIX: iPhone ultra-wide lens distortion correction
                 # iPhone ultra-wide (0.5x) has significant barrel distortion that needs proper correction
@@ -904,9 +902,9 @@ class CorrectHuginStitcher:
         # Now that we have correct iOS coordinate mapping, use proper equirectangular
         # This will create true 360° photospheres compatible with VR/360° viewers
         
-        projection_type = 0  # Equirectangular - standard for 360° panoramas
+        projection_type = 2  # FIXED: f2 = equirectangular (matches PTO file format)
         
-        logger.info(f"🎯 Using equirectangular projection (type 0) for true 360° panorama")
+        logger.info(f"🎯 Using equirectangular projection (type 2) for true 360° panorama")
         logger.info(f"📐 Canvas: {self.canvas_size[0]}×{self.canvas_size[1]} (2:1 aspect ratio)")
         logger.info(f"✅ iOS coordinate mapping ensures proper orientation")
         
@@ -922,7 +920,7 @@ class CorrectHuginStitcher:
         self._run_command(cmd, "pano_modify")
         
         # CRITICAL FIX: Set proper FOV for chosen projection
-        if projection_type == 0:  # Equirectangular
+        if projection_type == 2:  # Equirectangular
             self._force_spherical_fov(final_project)  # v360 for full sphere
         else:  # Cylindrical or other projection
             self._force_horizontal_fov(final_project)  # Adjust FOV for limited elevation range
