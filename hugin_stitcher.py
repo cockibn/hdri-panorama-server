@@ -282,6 +282,20 @@ class CorrectHuginStitcher:
             elevation = cp.get('elevation', 0.0)
             position = cp.get('position', [0.0, 0.0, 0.0])
             logger.info(f"🔍 Image {i:2d}: azimuth={azimuth:7.2f}°, elevation={elevation:6.2f}°, pos=[{position[0]:6.2f}, {position[1]:6.2f}, {position[2]:6.2f}]")
+            
+            # DISTORTION DEBUG: Log Hugin coordinate conversion
+            wrap_azimuth = azimuth % 360
+            nx = (wrap_azimuth + 180) / 360
+            nx = nx % 1.0
+            yaw = nx * 360 - 180
+            pitch = elevation
+            logger.info(f"🔍        → Hugin: yaw={yaw:7.2f}°, pitch={pitch:6.2f}° | nx={nx:.3f}")
+            
+            # Check for suspicious coordinate patterns
+            if abs(yaw) > 175:
+                logger.warning(f"⚠️ Image {i} very close to 180° seam: yaw={yaw:.2f}°")
+            if abs(pitch) > 60:
+                logger.warning(f"⚠️ Image {i} near pole: pitch={pitch:.2f}°")
         
         # Check for problematic patterns
         zero_positions = sum(1 for cp in capture_points if cp.get('azimuth', 0.0) == 0.0 and cp.get('elevation', 0.0) == 0.0)
@@ -700,6 +714,10 @@ class CorrectHuginStitcher:
                 if os.path.exists(cp_project):
                     cp_count = self._count_control_points(cp_project)
                     logger.info(f"🎯 Strategy '{strategy['name']}' found {cp_count} control points")
+                    
+                    # DISTORTION DEBUG: Analyze control point distribution
+                    if cp_count > 0:
+                        self._analyze_control_point_distribution(cp_project)
                     
                     if cp_count > best_cp_count:
                         best_cp_count = cp_count
@@ -1640,6 +1658,59 @@ class CorrectHuginStitcher:
             return content.count('\nc ')
         except:
             return 0
+    
+    def _analyze_control_point_distribution(self, project_file: str):
+        """Analyze control point distribution to detect potential misplacement issues."""
+        try:
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # Parse control points: c n0 N1 x1 y1 X1 Y1 t0
+            control_points = []
+            for line in content.split('\n'):
+                if line.startswith('c n'):
+                    parts = line.split()
+                    if len(parts) >= 7:
+                        n0 = int(parts[1][1:])  # Remove 'n' prefix
+                        n1 = int(parts[2][1:])  # Remove 'N' prefix
+                        control_points.append((n0, n1))
+            
+            # Analyze image pair connections
+            from collections import defaultdict
+            connections = defaultdict(int)
+            image_connections = defaultdict(set)
+            
+            for n0, n1 in control_points:
+                pair = tuple(sorted([n0, n1]))
+                connections[pair] += 1
+                image_connections[n0].add(n1)
+                image_connections[n1].add(n0)
+            
+            # Log distribution analysis
+            logger.info(f"🔍 CONTROL POINT DISTRIBUTION ANALYSIS:")
+            logger.info(f"   📊 Total image pairs with connections: {len(connections)}")
+            
+            # Check for isolated images (poor connections)
+            for img_idx in range(len(image_connections)):
+                conn_count = len(image_connections[img_idx])
+                if conn_count < 2:
+                    logger.warning(f"⚠️ Image {img_idx} has only {conn_count} connections - may be misplaced")
+                elif conn_count > 8:
+                    logger.info(f"✅ Image {img_idx} well connected: {conn_count} connections")
+            
+            # Check for uneven distribution
+            pair_counts = list(connections.values())
+            if pair_counts:
+                avg_cp_per_pair = sum(pair_counts) / len(pair_counts)
+                max_cp_per_pair = max(pair_counts)
+                min_cp_per_pair = min(pair_counts)
+                logger.info(f"   📊 Control points per image pair: avg={avg_cp_per_pair:.1f}, min={min_cp_per_pair}, max={max_cp_per_pair}")
+                
+                if max_cp_per_pair > avg_cp_per_pair * 3:
+                    logger.warning(f"⚠️ Uneven control point distribution - some pairs have {max_cp_per_pair} vs avg {avg_cp_per_pair:.1f}")
+                    
+        except Exception as e:
+            logger.warning(f"Could not analyze control point distribution: {e}")
     
     def _validate_pto_connectivity(self, project_file: str) -> bool:
         """RESEARCH-BASED: Validate that all images are connected via control points."""
