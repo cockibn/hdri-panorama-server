@@ -1590,6 +1590,23 @@ class CorrectHuginStitcher:
                     progress_message = f"Blending: {elapsed_min}m {elapsed_sec}s elapsed{file_info}"
                     logger.info(f"🔄 {tool_name}: {progress_message}")
                     
+                    # EMERGENCY DETECTION: Check for stuck enblend (no output after significant time)
+                    if elapsed > 600 and file_info == " (0MB written)":  # 10+ minutes with no output
+                        logger.error(f"🚨 STUCK ENBLEND DETECTED: {elapsed_min}m with 0MB output")
+                        logger.error(f"🚨 Enblend cannot process the rendered TIFF files")
+                        logger.error(f"🚨 This indicates nona rendering or input coordinate issues")
+                        logger.error(f"🚨 Terminating stuck process to try fallback strategy")
+                        
+                        # Kill the stuck process
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        
+                        raise RuntimeError(f"Enblend stuck for {elapsed_min}m with 0MB output - input file issues detected")
+                    
                     # Call progress callback if available (passed from main processing)
                     if hasattr(self, 'progress_callback') and self.progress_callback:
                         # Map to 95-99% range during blending
