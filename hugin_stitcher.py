@@ -656,20 +656,23 @@ class CorrectHuginStitcher:
         # Progressive strategy: try iPhone-optimized approach first, then fallbacks
         strategies = [
             {
-                "name": "Ultra-wide aggressive matching",
+                "name": "Ultra-wide professional feature matching",
                 "cmd": [
                     "cpfind",
                     "--multirow",                    # Multi-row panorama detection
-                    "--sieve1-width=10",            # More aggressive - ultra-wide has good overlap
-                    "--sieve1-height=10",
-                    "--sieve1-size=400",            # Many more control points for ultra-wide
-                    "--threshold=0.3",              # Lower threshold - find more matches
-                    "--ransac-threshold=15",        # More tolerant geometric verification
-                    "--kdtree",                     # Better feature matching algorithm
+                    "--sieve1-width=8",             # Aggressive for ultra-wide precision
+                    "--sieve1-height=8",
+                    "--sieve1-size=1000",           # Maximum control points for best accuracy
+                    "--threshold=0.25",             # Lower threshold for more matches
+                    "--ransac-threshold=20",        # Tolerant for ultra-wide geometry
+                    "--ransac-iterations=2000",     # More iterations for better accuracy
+                    "--kdtree",                     # Optimized matching algorithm
+                    "--celeste",                    # Sky detection and masking
+                    "--downscale=2",               # Process at half resolution first for speed
                     "-o", cp_project,
                     project_file
                 ],
-                "timeout": 900
+                "timeout": 1200  # Extended time for thorough matching
             },
             {
                 "name": "Ultra-wide maximum overlap detection", 
@@ -1263,9 +1266,19 @@ class CorrectHuginStitcher:
         # Progressive enblend strategy optimized for 360° panoramas
         strategies = [
             {
-                "name": "360° optimized",
-                "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--compression=LZW"] + tiff_files,
-                "timeout": 2400  # Increased to 40 minutes for complex post-orientation-fix processing
+                "name": "360° professional ultra-wide optimized",
+                "cmd": [
+                    "enblend",
+                    "-o", tiff_output,
+                    "--wrap=horizontal",           # Essential for 360° seamless wrapping
+                    "--compression=LZW",          # Lossless compression
+                    "--fine-mask",                # High-quality seam detection for ultra-wide overlap
+                    "--optimize",                 # Optimize seam placement for best quality
+                    "--primary-seam-generator=nearest-feature-transform",  # Best for feature-rich images
+                    "--image-cache=2048MB",       # Large cache for 4K images
+                    "--save-masks",               # Save blend masks for debugging
+                ] + tiff_files,
+                "timeout": 3600  # Extended to 60 minutes for maximum quality
             },
             {
                 "name": "360° optimized with reduced levels",
@@ -1590,22 +1603,9 @@ class CorrectHuginStitcher:
                     progress_message = f"Blending: {elapsed_min}m {elapsed_sec}s elapsed{file_info}"
                     logger.info(f"🔄 {tool_name}: {progress_message}")
                     
-                    # EMERGENCY DETECTION: Check for stuck enblend (no output after significant time)
-                    if elapsed > 600 and file_info == " (0MB written)":  # 10+ minutes with no output
-                        logger.error(f"🚨 STUCK ENBLEND DETECTED: {elapsed_min}m with 0MB output")
-                        logger.error(f"🚨 Enblend cannot process the rendered TIFF files")
-                        logger.error(f"🚨 This indicates nona rendering or input coordinate issues")
-                        logger.error(f"🚨 Terminating stuck process to try fallback strategy")
-                        
-                        # Kill the stuck process
-                        process.terminate()
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait()
-                        
-                        raise RuntimeError(f"Enblend stuck for {elapsed_min}m with 0MB output - input file issues detected")
+                    # PATIENCE MODE: Let enblend work without interruption
+                    # High-quality blending can take 30-40+ minutes for complex panoramas
+                    # Trust enblend to complete its multi-resolution pyramid blending process
                     
                     # Call progress callback if available (passed from main processing)
                     if hasattr(self, 'progress_callback') and self.progress_callback:
