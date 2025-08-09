@@ -1263,72 +1263,32 @@ class CorrectHuginStitcher:
         else:
             logger.info("📋 Complete image set - full 360° coverage expected")
         
-        # Progressive enblend strategy optimized for 360° panoramas
-        strategies = [
-            {
-                "name": "360° professional ultra-wide optimized",
-                "cmd": [
-                    "enblend",
-                    "-o", tiff_output,
-                    "--wrap=horizontal",           # Essential for 360° seamless wrapping
-                    "--compression=LZW",          # Lossless compression
-                    "--fine-mask",                # High-quality seam detection for ultra-wide overlap
-                    "--optimize",                 # Optimize seam placement for best quality
-                    "--primary-seam-generator=nearest-feature-transform",  # Best for feature-rich images
-                    "--image-cache=2048MB",       # Large cache for 4K images
-                    "--save-masks",               # Save blend masks for debugging
-                ] + tiff_files,
-                "timeout": 3600  # Extended to 60 minutes for maximum quality
-            },
-            {
-                "name": "360° optimized with reduced levels",
-                "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--levels=4", "--compression=LZW"] + tiff_files,
-                "timeout": 1800  # 30 minutes - balance between quality and speed
-            },
-            {
-                "name": "360° with no optimize",
-                "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--no-optimize", "--compression=LZW"] + tiff_files,
-                "timeout": 800  # Increased from 500s for better reliability
-            },
-            {
-                "name": "360° reduced levels",
-                "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--levels=3", "--no-optimize", "--compression=LZW"] + tiff_files,
-                "timeout": 900  # Increased from 600s
-            },
-            {
-                "name": "360° minimal levels",
-                "cmd": ["enblend", "-o", tiff_output, "--wrap=horizontal", "--levels=2", "--no-optimize", "--compression=LZW"] + tiff_files,
-                "timeout": 1000  # Increased from 700s
-            },
-            {
-                "name": "Basic fallback",
-                "cmd": ["enblend", "-o", tiff_output, "--no-optimize"] + tiff_files,
-                "timeout": 600  # Reduced as emergency fallback should be fast
-            }
-        ]
+        # Simplified single enblend approach - no complex strategies
         
-        success = False
-        for i, strategy in enumerate(strategies):
-            if success:
-                break
-                
-            logger.info(f"🔍 Trying enblend strategy {i+1}/{len(strategies)}: {strategy['name']}")
-            logger.info(f"📋 Command: {' '.join(strategy['cmd'])}")
+        # Single simplified enblend command - no strategies, no timeouts
+        cmd = [
+            "enblend",
+            "-o", tiff_output,
+            "--wrap=horizontal",     # Essential for 360° seamless wrapping
+            "--compression=LZW"      # Lossless compression
+        ] + tiff_files
+        
+        logger.info("🔍 Running single optimized enblend command")
+        logger.info(f"📋 Command: {' '.join(cmd)}")
+        
+        try:
+            # Use simple _run_command without progress tracking or MB checks
+            self._run_command(cmd, "enblend", timeout=0)  # No timeout - let it run as long as needed
             
-            # Remove any partial output from previous attempts
-            if os.path.exists(tiff_output):
-                os.remove(tiff_output)
-                
-            try:
-                self._run_enblend_with_progress(strategy["cmd"], f"enblend ({strategy['name']})", timeout=strategy["timeout"])
-                if os.path.exists(tiff_output) and os.path.getsize(tiff_output) > 0:
-                    logger.info(f"✅ Enblend strategy '{strategy['name']}' succeeded!")
-                    success = True
-                else:
-                    logger.warning(f"⚠️ Enblend strategy '{strategy['name']}' produced no output")
-            except Exception as e:
-                logger.warning(f"⚠️ Enblend strategy '{strategy['name']}' failed: {e}")
-                continue
+            if os.path.exists(tiff_output) and os.path.getsize(tiff_output) > 0:
+                logger.info("✅ Enblend completed successfully!")
+                success = True
+            else:
+                logger.warning("⚠️ Enblend produced no output file")
+                success = False
+        except Exception as e:
+            logger.warning(f"⚠️ Enblend failed: {e}")
+            success = False
         
         if not success:
             # EMERGENCY FALLBACK: Use OpenCV simple blending when enblend fails completely
@@ -1667,11 +1627,14 @@ class CorrectHuginStitcher:
         logger.info(f"🔧 Running {tool_name}: {cmd_str}")
         
         try:
+            # Handle timeout=0 as "no timeout"
+            timeout_param = None if timeout == 0 else timeout
+            
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=timeout_param,
                 check=True,
                 cwd=self.temp_dir
             )
