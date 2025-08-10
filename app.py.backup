@@ -34,7 +34,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Ensure all loggers use INFO level
-logging.getLogger('services').setLevel(logging.INFO)
+logging.getLogger('hugin_stitcher').setLevel(logging.INFO)
 
 # Import microservices
 from services import (
@@ -556,6 +556,351 @@ class MicroservicesPanoramaProcessor:
 processor = MicroservicesPanoramaProcessor()
 
 # Bundle processing functions are defined below after the Flask routes
+
+@app.route('/v1/panorama/process', methods=['POST'])
+            # Ensure panorama is in float32 format for EXR encoding
+            if panorama.dtype != np.float32:
+                if panorama.dtype == np.uint8:
+                    panorama = panorama.astype(np.float32) / 255.0  # Normalize to 0-1 range
+                elif panorama.dtype == np.uint16:
+                    panorama = panorama.astype(np.float32) / 65535.0  # Normalize to 0-1 range
+                else:
+                    panorama = panorama.astype(np.float32)
+            
+            logger.info(f"📊 Panorama data type: {panorama.dtype}, shape: {panorama.shape}, range: {panorama.min():.3f}-{panorama.max():.3f}")
+            cv2.imwrite(str(output_path), panorama, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+            logger.info(f"📁 EXR file saved successfully: {output_path.stat().st_size / (1024*1024):.1f}MB")
+            
+            # Create JPEG preview with 360° photosphere metadata
+            # Convert float32 HDR data to uint8 for JPEG preview
+            panorama_preview = (np.clip(panorama, 0, 1) * 255).astype(np.uint8)
+            result_rgb = cv2.cvtColor(panorama_preview, cv2.COLOR_BGR2RGB)
+            
+            # Save JPEG with proper 360° photosphere metadata
+            pil_image = Image.fromarray(result_rgb)
+            
+            # Add Google Photosphere XMP metadata for 360° viewer compatibility
+            import piexif
+            exif_dict = {
+                "0th": {
+                    piexif.ImageIFD.Make: "HDRi 360 Studio",
+                    piexif.ImageIFD.Model: "iPhone Ultra-Wide Panorama",
+                    piexif.ImageIFD.Software: "Hugin Professional Pipeline",
+                    piexif.ImageIFD.ImageDescription: "Equirectangular 360° Photosphere"
+                }
+            }
+            
+            # Add photosphere-specific metadata
+            xmp_photosphere = f"""<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/">
+   <GPano:ProjectionType>equirectangular</GPano:ProjectionType>
+   <GPano:UsePanoramaViewer>True</GPano:UsePanoramaViewer>
+   <GPano:CroppedAreaImageWidthPixels>{width}</GPano:CroppedAreaImageWidthPixels>
+   <GPano:CroppedAreaImageHeightPixels>{height}</GPano:CroppedAreaImageHeightPixels>
+   <GPano:FullPanoWidthPixels>{width}</GPano:FullPanoWidthPixels>
+   <GPano:FullPanoHeightPixels>{height}</GPano:FullPanoHeightPixels>
+   <GPano:CroppedAreaLeftPixels>0</GPano:CroppedAreaLeftPixels>
+   <GPano:CroppedAreaTopPixels>0</GPano:CroppedAreaTopPixels>
+   <GPano:PoseHeadingDegrees>0</GPano:PoseHeadingDegrees>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"""
+            
+            try:
+                exif_bytes = piexif.dump(exif_dict)
+                pil_image.save(str(preview_path), 'JPEG', quality=85, optimize=True, exif=exif_bytes)
+                
+                # Add proper GPano XMP metadata with exiftool if available
+                self._embed_gpano_metadata(str(preview_path), width, height)
+                
+                logger.info("📱 JPEG preview saved with EXIF metadata and GPano XMP tags")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not add photosphere metadata: {e}")
+                pil_image.save(str(preview_path), 'JPEG', quality=85, optimize=True)
+                logger.info("📱 JPEG preview saved without metadata")
+            
+            # Use BASE_URL from environment or parameter passed from request context
+            final_base_url = base_url or os.environ.get('BASE_URL') or 'http://localhost:5001'
+            final_base_url = final_base_url.rstrip('/')
+            result_url = f"{final_base_url}/v1/panorama/result/{job_id}"
+            preview_url = f"{final_base_url}/v1/panorama/preview/{job_id}"
+            
+            logger.info(f"🎉 iPhone-optimized HDR panorama processing completed successfully!")
+            logger.info(f"📥 Download EXR: {result_url}")
+            logger.info(f"👁️  Preview JPEG: {preview_url}")
+            logger.info(f"📊 Quality Score: {quality_metrics['overallScore']:.3f}")
+            logger.info(f"📐 Resolution: {quality_metrics['resolution']}")
+            logger.info(f"📱 Processor: {quality_metrics.get('processor', 'Hugin (iPhone Optimized)')}")
+            
+            self._update_job_status(job_id, JobState.COMPLETED, 1.0, "iPhone-optimized HDR panorama ready!", 
+                                  result_url=result_url,
+                                  quality_metrics=quality_metrics)
+            
+        except Exception as e:
+            logger.exception(f"Processing failed for job {job_id}")
+            self._update_job_status(job_id, JobState.FAILED, 0.0, f"Error: {e}")
+
+    def _embed_gpano_metadata(self, image_path: str, width: int, height: int):
+        """Embed proper GPano XMP metadata using exiftool for 360° compatibility."""
+        try:
+            import subprocess
+            import shutil
+            
+            # Check if exiftool is available
+            if not shutil.which('exiftool'):
+                logger.warning("⚠️ exiftool not found - GPano XMP metadata not embedded")
+                logger.info("💡 Install exiftool for full 360° viewer compatibility")
+                return
+            
+            # Use exiftool to embed GPano XMP metadata
+            cmd = [
+                'exiftool',
+                '-overwrite_original',
+                f'-XMP-GPano:ProjectionType=equirectangular',
+                f'-XMP-GPano:UsePanoramaViewer=True',
+                f'-XMP-GPano:CroppedAreaImageWidthPixels={width}',
+                f'-XMP-GPano:CroppedAreaImageHeightPixels={height}',
+                f'-XMP-GPano:FullPanoWidthPixels={width}',
+                f'-XMP-GPano:FullPanoHeightPixels={height}',
+                f'-XMP-GPano:CroppedAreaLeftPixels=0',
+                f'-XMP-GPano:CroppedAreaTopPixels=0',
+                f'-XMP-GPano:PoseHeadingDegrees=0',
+                image_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                logger.info("✅ GPano XMP metadata successfully embedded with exiftool")
+            else:
+                logger.warning(f"⚠️ exiftool failed: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("⚠️ exiftool timeout - GPano metadata may be incomplete")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to embed GPano metadata: {e}")
+
+    def _pad_to_photosphere_ratio(self, panorama: np.ndarray) -> np.ndarray:
+        """Pad panorama to 2:1 aspect ratio for photosphere compatibility."""
+        try:
+            height, width = panorama.shape[:2]
+            target_width = height * 2  # 2:1 aspect ratio
+            
+            if width >= target_width:
+                # Already wide enough or too wide - center crop to 2:1
+                crop_width = height * 2
+                start_x = (width - crop_width) // 2
+                return panorama[:, start_x:start_x + crop_width]
+            else:
+                # Too narrow - pad horizontally with black
+                pad_total = target_width - width
+                pad_left = pad_total // 2
+                pad_right = pad_total - pad_left
+                
+                if len(panorama.shape) == 3:
+                    # Color image
+                    padding = ((0, 0), (pad_left, pad_right), (0, 0))
+                else:
+                    # Grayscale image
+                    padding = ((0, 0), (pad_left, pad_right))
+                
+                return np.pad(panorama, padding, mode='constant', constant_values=0)
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to pad panorama: {e}")
+            return panorama
+
+    def _load_and_orient_image(self, img_path: str) -> Optional[np.ndarray]:
+        """Load image with proper EXIF orientation handling for Hugin processing."""
+        try:
+            pil_image = Image.open(img_path)
+            # QUALITY FIX: Handle orientation properly for maximum quality preservation
+            # iOS now sends original camera data - apply EXIF orientation once, correctly
+            oriented_image = ImageOps.exif_transpose(pil_image)
+            result = cv2.cvtColor(np.array(oriented_image), cv2.COLOR_RGB2BGR)
+            
+            # Log image dimensions to verify orientation handling
+            height, width = result.shape[:2]
+            logger.info(f"📸 Loaded image: {width}×{height} (orientation-corrected from EXIF)")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Failed to load image {img_path}: {e}")
+            return None
+
+    def _update_job_status(self, job_id: str, state: str, progress: float, message: str, 
+                          result_url: str = None, quality_metrics: dict = None):
+        """Update job status in a thread-safe manner."""
+        with job_lock:
+            if job_id in jobs:
+                jobs[job_id].update({
+                    "state": state,
+                    "progress": round(progress, 2),
+                    "message": message,
+                    "lastUpdated": datetime.now(timezone.utc).isoformat()
+                })
+                if result_url:
+                    jobs[job_id]["resultUrl"] = result_url
+                if quality_metrics:
+                    jobs[job_id]["qualityMetrics"] = quality_metrics
+                if state == JobState.FAILED and "error" not in jobs[job_id]:
+                    jobs[job_id]["error"] = message
+
+# (The rest of your app.py file (routes, etc.) is excellent and does not need changes)
+# --- SNIP --- The existing Flask routes are well-written. I'll just copy the necessary parts.
+
+def validate_bundle_format(bundle_data):
+    """Validate bundle data format and prevent malicious content."""
+    if not bundle_data.startswith(b"HDRI_BUNDLE_V1\n"):
+        raise ValueError("Invalid bundle format header")
+    
+    if len(bundle_data) > 500 * 1024 * 1024:  # 500MB limit
+        raise ValueError("Bundle exceeds maximum size limit")
+    
+    return True
+
+def validate_image_index(index_str):
+    """Validate image index to prevent path traversal."""
+    try:
+        index = int(index_str)
+        if index < 0 or index > 100:  # Reasonable limits
+            raise ValueError(f"Image index out of range: {index}")
+        return index
+    except ValueError:
+        raise ValueError(f"Invalid image index: {index_str}")
+
+def extract_bundle_images(bundle_file, upload_dir):
+    image_files = []
+    try:
+        bundle_data = bundle_file.read()
+        validate_bundle_format(bundle_data)
+        
+        parts = bundle_data.split(b'\n', 2)
+        if len(parts) < 3:
+            raise ValueError("Malformed bundle structure")
+            
+        try:
+            image_count = int(parts[1])
+        except ValueError:
+            raise ValueError("Invalid image count in bundle")
+            
+        if image_count <= 0 or image_count > 50:  # Reasonable limits
+            raise ValueError(f"Invalid image count: {image_count}")
+            
+        data = parts[2]
+        
+        original_exif_data = []
+        offset = 0
+        
+        # First, extract all images (most critical part)
+        for i in range(image_count):
+            try:
+                header_end = data.find(b'\n', offset)
+                if header_end == -1:
+                    raise ValueError(f"Malformed header for image {i}")
+                    
+                header = data[offset:header_end].decode('utf-8', errors='strict')
+                
+                if ':' not in header:
+                    raise ValueError(f"Invalid header format for image {i}: {header}")
+                    
+                index_str, size_str = header.split(':', 1)
+                
+                # SECURITY FIX: Validate index to prevent path traversal
+                index = validate_image_index(index_str)
+                
+                try:
+                    size = int(size_str)
+                except ValueError:
+                    raise ValueError(f"Invalid size for image {i}: {size_str}")
+                    
+                if size <= 0 or size > 50 * 1024 * 1024:  # 50MB per image limit
+                    raise ValueError(f"Invalid image size for image {i}: {size}")
+                
+                offset = header_end + 1
+                
+                if offset + size > len(data):
+                    raise ValueError(f"Image {i} data extends beyond bundle")
+                
+                image_data = data[offset : offset + size]
+                
+                # SECURITY FIX: Use safe filename construction
+                safe_filename = f"image_{index:04d}.jpg"  # Zero-padded, safe format
+                filepath = upload_dir / safe_filename
+                
+                # Ensure the path is within upload_dir (additional safety)
+                if not filepath.resolve().is_relative_to(upload_dir.resolve()):
+                    raise ValueError(f"Invalid file path for image {i}")
+                
+                filepath.write_bytes(image_data)
+                image_files.append(str(filepath))
+                
+                # Extract original EXIF data (secondary priority)
+                try:
+                    import piexif
+                    exif_dict = piexif.load(image_data)
+                    original_exif_data.append(exif_dict)
+                    logger.info(f"📋 Extracted EXIF data from image {index}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not extract EXIF from image {index}: {e}")
+                    original_exif_data.append({})
+                
+                offset += size
+                
+            except Exception as image_error:
+                logger.error(f"Failed to extract image {i}: {image_error}")
+                # Continue with next image
+                continue
+        
+        logger.info(f"📦 Successfully extracted {len(image_files)} images")
+        
+        # Store EXIF data for later use (tertiary priority)
+        try:
+            exif_file = upload_dir / "original_exif.json"
+            with open(exif_file, 'w') as f:
+                import json
+                # Convert EXIF data to JSON-serializable format
+                serializable_exif = []
+                for exif_dict in original_exif_data:
+                    if not exif_dict:  # Skip empty EXIF data
+                        serializable_exif.append({})
+                        continue
+                        
+                    serializable = {}
+                    for ifd_name in exif_dict:
+                        if exif_dict[ifd_name] is None:  # Skip None IFD data
+                            continue
+                        serializable[ifd_name] = {}
+                        for tag in exif_dict[ifd_name]:
+                            try:
+                                # Convert bytes to base64 for JSON serialization
+                                value = exif_dict[ifd_name][tag]
+                                if isinstance(value, bytes):
+                                    import base64
+                                    serializable[ifd_name][tag] = {"type": "bytes", "data": base64.b64encode(value).decode()}
+                                else:
+                                    serializable[ifd_name][tag] = {"type": "value", "data": value}
+                            except Exception as json_error:
+                                logger.debug(f"Skipping EXIF tag {tag} due to JSON serialization error: {json_error}")
+                                pass
+                    serializable_exif.append(serializable)
+                json.dump(serializable_exif, f)
+            logger.info(f"📋 Saved EXIF data for {len(original_exif_data)} images")
+        except Exception as exif_save_error:
+            logger.warning(f"⚠️ Failed to save EXIF data: {exif_save_error}")
+            # Continue without EXIF data if saving fails
+        
+        return image_files
+        
+    except Exception as e:
+        logger.error(f"Failed to extract bundle: {e}")
+        logger.info(f"📦 Returning {len(image_files)} images that were successfully extracted before error")
+        return image_files  # Return whatever images we managed to extract
+
+processor = PanoramaProcessor()
 
 @app.route('/v1/panorama/process', methods=['POST'])
 @limiter.limit("10 per minute")  # Strict rate limiting for processing endpoint
