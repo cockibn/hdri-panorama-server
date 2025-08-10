@@ -81,7 +81,7 @@ class CorrectHuginStitcher:
                 if progress_callback:
                     progress_callback(0.15, "Generating project file...")
                 
-                project_file = self._generate_project_file(image_paths, capture_points, exif_data)
+                project_file = self._generate_project_file(image_paths, capture_points, exif_data, session_data)
                 
                 # Step 2: Find control points (Official Hugin workflow)
                 if progress_callback:
@@ -212,7 +212,7 @@ class CorrectHuginStitcher:
         logger.info(f"📁 QUALITY PRESERVATION: Saved {len(image_paths)} high-quality images for Hugin processing")
         return image_paths
     
-    def _generate_project_file(self, image_paths: List[str], capture_points: List[Dict] = None, original_exif_data: List = None) -> str:
+    def _generate_project_file(self, image_paths: List[str], capture_points: List[Dict] = None, original_exif_data: List = None, session_data: Dict = None) -> str:
         """Step 1: Generate project file with ARKit positioning data."""
         project_file = os.path.join(self.temp_dir, "project.pto")
         
