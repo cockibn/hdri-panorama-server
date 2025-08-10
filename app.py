@@ -55,8 +55,24 @@ UPLOAD_DIR, OUTPUT_DIR = Path("uploads"), Path("outputs")
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+def validate_job_id(job_id: str) -> bool:
+    """Validate job ID to prevent path traversal and injection attacks."""
+    if not job_id or not isinstance(job_id, str):
+        return False
+    if len(job_id) != 36:  # UUID4 length
+        return False
+    # UUID4 format: 8-4-4-4-12 characters, only hex and hyphens
+    if not all(c in '0123456789abcdef-' for c in job_id.lower()):
+        return False
+    # Check UUID format structure
+    parts = job_id.split('-')
+    if len(parts) != 5 or [len(p) for p in parts] != [8, 4, 4, 4, 12]:
+        return False
+    return True
+
 jobs: Dict[str, Dict] = {}
 job_lock = threading.Lock()
+cleanup_timer = None  # Global cleanup timer
 
 # Job cleanup configuration
 JOB_RETENTION_HOURS = int(os.environ.get('JOB_RETENTION_HOURS', '24'))
@@ -69,39 +85,83 @@ def cleanup_old_jobs():
         
         with job_lock:
             expired_job_ids = []
+            current_job_count = len(jobs)
+            
+            # Also limit total job count to prevent unbounded growth
+            MAX_JOBS = int(os.environ.get('MAX_JOBS', '1000'))
+            
             for job_id, job_data in jobs.items():
                 try:
+                    # Validate job_id format
+                    if not validate_job_id(job_id):
+                        logger.warning(f"Invalid job ID found in storage: {job_id}")
+                        expired_job_ids.append(job_id)
+                        continue
+                    
                     last_updated = datetime.fromisoformat(job_data.get('lastUpdated', ''))
                     if last_updated < cutoff_time:
                         expired_job_ids.append(job_id)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError) as e:
                     # Invalid timestamp, mark for cleanup
+                    logger.warning(f"Invalid timestamp for job {job_id}: {e}")
                     expired_job_ids.append(job_id)
+            
+            # If still too many jobs, remove oldest completed ones
+            if current_job_count - len(expired_job_ids) > MAX_JOBS:
+                completed_jobs = []
+                for job_id, job_data in jobs.items():
+                    if job_id not in expired_job_ids and job_data.get('state') in ['completed', 'failed']:
+                        try:
+                            last_updated = datetime.fromisoformat(job_data.get('lastUpdated', ''))
+                            completed_jobs.append((job_id, last_updated))
+                        except (ValueError, TypeError):
+                            expired_job_ids.append(job_id)
+                
+                # Sort by timestamp and remove oldest
+                completed_jobs.sort(key=lambda x: x[1])
+                overflow = (current_job_count - len(expired_job_ids)) - MAX_JOBS
+                if overflow > 0:
+                    for job_id, _ in completed_jobs[:overflow]:
+                        expired_job_ids.append(job_id)
+                    logger.warning(f"Removing {overflow} old jobs due to MAX_JOBS limit")
             
             # Clean up expired jobs
             for job_id in expired_job_ids:
                 try:
-                    # Clean up any associated files
-                    upload_dir = UPLOAD_DIR / job_id
-                    if upload_dir.exists():
-                        import shutil
-                        shutil.rmtree(upload_dir, ignore_errors=True)
+                    # Validate job_id before using in file operations
+                    if validate_job_id(job_id):
+                        # Clean up any associated files
+                        upload_dir = UPLOAD_DIR / job_id
+                        if upload_dir.exists():
+                            import shutil
+                            shutil.rmtree(upload_dir, ignore_errors=True)
+                        
+                        output_files = list(OUTPUT_DIR.glob(f"{job_id}_*"))
+                        for output_file in output_files:
+                            try:
+                                output_file.unlink(missing_ok=True)
+                            except Exception as e:
+                                logger.warning(f"Could not delete file {output_file}: {e}")
                     
-                    output_files = list(OUTPUT_DIR.glob(f"{job_id}_*"))
-                    for output_file in output_files:
-                        output_file.unlink(missing_ok=True)
-                    
-                    del jobs[job_id]
+                    # Remove from jobs dict
+                    if job_id in jobs:
+                        del jobs[job_id]
+                        
                 except Exception as e:
                     logger.warning(f"Error cleaning up job {job_id}: {e}")
             
             if expired_job_ids:
-                logger.info(f"Cleaned up {len(expired_job_ids)} expired jobs")
+                logger.info(f"Cleaned up {len(expired_job_ids)} expired jobs (was {current_job_count}, now {len(jobs)})")
                 
     except Exception as e:
         logger.error(f"Error during job cleanup: {e}")
+        # Continue running even if cleanup fails
     
-    # Schedule next cleanup
+    # MEMORY LEAK FIX: Use a single persistent timer instead of recursive creation
+    global cleanup_timer
+    if cleanup_timer and cleanup_timer.is_alive():
+        cleanup_timer.cancel()
+    
     cleanup_timer = threading.Timer(CLEANUP_INTERVAL_MINUTES * 60, cleanup_old_jobs)
     cleanup_timer.daemon = True
     cleanup_timer.start()
@@ -110,44 +170,72 @@ def check_system_resources():
     """Check if system has adequate resources for processing."""
     try:
         # Check disk space
-        disk_usage = psutil.disk_usage('/')
-        disk_free_percent = (disk_usage.free / disk_usage.total) * 100
-        
-        if disk_free_percent < 10:  # Less than 10% free
-            raise RuntimeError(f"Insufficient disk space: {disk_free_percent:.1f}% free")
+        try:
+            disk_usage = psutil.disk_usage('/')
+            disk_free_percent = (disk_usage.free / disk_usage.total) * 100
+            disk_free_gb = disk_usage.free / (1024**3)
+            
+            # Require at least 5GB free space for processing
+            if disk_free_gb < 5.0:
+                raise RuntimeError(f"Insufficient disk space: {disk_free_gb:.1f}GB free (need 5GB minimum)")
+                
+            if disk_free_percent < 5:  # Less than 5% free is critical
+                raise RuntimeError(f"Critical disk space: {disk_free_percent:.1f}% free")
+        except psutil.Error as e:
+            logger.error(f"Could not check disk space: {e}")
+            raise RuntimeError("Unable to verify disk space availability")
         
         # Check memory
-        memory = psutil.virtual_memory()
-        if memory.percent > 90:  # More than 90% used
-            raise RuntimeError(f"Insufficient memory: {memory.percent:.1f}% used")
+        try:
+            memory = psutil.virtual_memory()
+            available_gb = memory.available / (1024**3)
+            
+            # Require at least 2GB available memory for processing
+            if available_gb < 2.0:
+                raise RuntimeError(f"Insufficient memory: {available_gb:.1f}GB available (need 2GB minimum)")
+                
+            if memory.percent > 85:  # More than 85% used is concerning
+                raise RuntimeError(f"High memory usage: {memory.percent:.1f}% used")
+        except psutil.Error as e:
+            logger.error(f"Could not check memory: {e}")
+            raise RuntimeError("Unable to verify memory availability")
         
-        # Check if too many active jobs
-        active_jobs = len([j for j in jobs.values() if j.get('state') == JobState.PROCESSING])
-        max_concurrent = int(os.environ.get('MAX_CONCURRENT_JOBS', '3'))
-        
-        if active_jobs >= max_concurrent:
-            raise RuntimeError(f"Too many active jobs: {active_jobs}/{max_concurrent}")
+        # Check active jobs
+        try:
+            with job_lock:
+                active_jobs = len([j for j in jobs.values() if j.get('state') == JobState.PROCESSING])
+            max_concurrent = int(os.environ.get('MAX_CONCURRENT_JOBS', '3'))
+            
+            if active_jobs >= max_concurrent:
+                raise RuntimeError(f"Server at capacity: {active_jobs}/{max_concurrent} jobs processing")
+        except Exception as e:
+            logger.error(f"Could not check job count: {e}")
+            raise RuntimeError("Unable to verify server capacity")
             
         return True
         
-    except psutil.Error as e:
-        logger.warning(f"Could not check system resources: {e}")
-        return True  # Allow processing if we can't check resources
+    except Exception as e:
+        # SECURITY FIX: Don't allow processing on resource check failure
+        logger.error(f"Resource check failed: {e}")
+        raise
 
 def require_api_key(f):
     """Decorator to require API key authentication."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Skip auth in development mode
-        if os.environ.get('DISABLE_AUTH') == 'true':
-            return f(*args, **kwargs)
-            
+        # SECURITY FIX: Removed dangerous DISABLE_AUTH bypass
+        
         api_key = request.headers.get('X-API-Key')
         expected_key = os.environ.get('API_KEY')
         
+        # Require API key in production
         if not expected_key:
-            # If no API key is configured, allow access (for development)
-            return f(*args, **kwargs)
+            if os.environ.get('FLASK_ENV') == 'development':
+                logger.warning("Development mode: API key not configured")
+                return f(*args, **kwargs)
+            else:
+                logger.error("Production deployment missing API_KEY environment variable")
+                return jsonify({"error": "Server configuration error"}), 500
             
         if not api_key or api_key != expected_key:
             logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
@@ -448,15 +536,44 @@ class PanoramaProcessor:
 # (The rest of your app.py file (routes, etc.) is excellent and does not need changes)
 # --- SNIP --- The existing Flask routes are well-written. I'll just copy the necessary parts.
 
+def validate_bundle_format(bundle_data):
+    """Validate bundle data format and prevent malicious content."""
+    if not bundle_data.startswith(b"HDRI_BUNDLE_V1\n"):
+        raise ValueError("Invalid bundle format header")
+    
+    if len(bundle_data) > 500 * 1024 * 1024:  # 500MB limit
+        raise ValueError("Bundle exceeds maximum size limit")
+    
+    return True
+
+def validate_image_index(index_str):
+    """Validate image index to prevent path traversal."""
+    try:
+        index = int(index_str)
+        if index < 0 or index > 100:  # Reasonable limits
+            raise ValueError(f"Image index out of range: {index}")
+        return index
+    except ValueError:
+        raise ValueError(f"Invalid image index: {index_str}")
+
 def extract_bundle_images(bundle_file, upload_dir):
     image_files = []
     try:
         bundle_data = bundle_file.read()
-        if not bundle_data.startswith(b"HDRI_BUNDLE_V1\n"):
-            raise ValueError("Invalid bundle format")
+        validate_bundle_format(bundle_data)
         
         parts = bundle_data.split(b'\n', 2)
-        image_count = int(parts[1])
+        if len(parts) < 3:
+            raise ValueError("Malformed bundle structure")
+            
+        try:
+            image_count = int(parts[1])
+        except ValueError:
+            raise ValueError("Invalid image count in bundle")
+            
+        if image_count <= 0 or image_count > 50:  # Reasonable limits
+            raise ValueError(f"Invalid image count: {image_count}")
+            
         data = parts[2]
         
         original_exif_data = []
@@ -466,13 +583,42 @@ def extract_bundle_images(bundle_file, upload_dir):
         for i in range(image_count):
             try:
                 header_end = data.find(b'\n', offset)
-                header = data[offset:header_end].decode()
-                index, size_str = header.split(':')
-                size = int(size_str)
+                if header_end == -1:
+                    raise ValueError(f"Malformed header for image {i}")
+                    
+                header = data[offset:header_end].decode('utf-8', errors='strict')
+                
+                if ':' not in header:
+                    raise ValueError(f"Invalid header format for image {i}: {header}")
+                    
+                index_str, size_str = header.split(':', 1)
+                
+                # SECURITY FIX: Validate index to prevent path traversal
+                index = validate_image_index(index_str)
+                
+                try:
+                    size = int(size_str)
+                except ValueError:
+                    raise ValueError(f"Invalid size for image {i}: {size_str}")
+                    
+                if size <= 0 or size > 50 * 1024 * 1024:  # 50MB per image limit
+                    raise ValueError(f"Invalid image size for image {i}: {size}")
+                
                 offset = header_end + 1
                 
+                if offset + size > len(data):
+                    raise ValueError(f"Image {i} data extends beyond bundle")
+                
                 image_data = data[offset : offset + size]
-                filepath = upload_dir / f"image_{index}.jpg"
+                
+                # SECURITY FIX: Use safe filename construction
+                safe_filename = f"image_{index:04d}.jpg"  # Zero-padded, safe format
+                filepath = upload_dir / safe_filename
+                
+                # Ensure the path is within upload_dir (additional safety)
+                if not filepath.resolve().is_relative_to(upload_dir.resolve()):
+                    raise ValueError(f"Invalid file path for image {i}")
+                
                 filepath.write_bytes(image_data)
                 image_files.append(str(filepath))
                 
@@ -648,6 +794,11 @@ def process_panorama():
 @app.route('/v1/panorama/status/<job_id>', methods=['GET'])
 @limiter.limit("300 per minute")  # More generous limit for status polling
 def get_job_status(job_id: str):
+    # SECURITY FIX: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        return jsonify({"error": "Invalid job ID format"}), 400
+    
     with job_lock:
         job = jobs.get(job_id)
     if not job:
@@ -656,6 +807,11 @@ def get_job_status(job_id: str):
 
 @app.route('/v1/panorama/result/<job_id>', methods=['GET'])
 def download_result(job_id: str):
+    # SECURITY FIX: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        abort(400)
+    
     with job_lock:
         job = jobs.get(job_id)
     if not job or job.get("state") != JobState.COMPLETED:
@@ -670,6 +826,11 @@ def download_result(job_id: str):
 @app.route('/v1/panorama/preview/<job_id>', methods=['GET'])
 def preview_result(job_id: str):
     """Preview the panorama in browser without downloading"""
+    # SECURITY FIX: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        abort(400)
+    
     with job_lock:
         job = jobs.get(job_id)
     if not job or job.get("state") != JobState.COMPLETED:

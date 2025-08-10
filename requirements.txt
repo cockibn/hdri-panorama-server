@@ -2,22 +2,37 @@
 # Compatible with Python 3.8+
 
 # Web framework
-Flask>=2.3.0
-Werkzeug>=2.3.0
+Flask>=2.3.0,<3.0.0
+Werkzeug>=2.3.0,<3.0.0
 
 # Computer vision and image processing (headless for cloud deployment)
-opencv-python-headless>=4.8.0
-opencv-contrib-python-headless>=4.8.0
-numpy>=1.24.0
-Pillow>=10.0.0
+opencv-python-headless>=4.8.0,<5.0.0
+opencv-contrib-python-headless>=4.8.0,<5.0.0
+numpy>=1.24.0,<2.0.0
+Pillow>=10.0.0,<11.0.0
+
+# Image I/O for EXR and HDR formats (referenced in code but missing)
+imageio>=2.22.0,<3.0.0
+imageio[ffmpeg]>=2.22.0  # For additional format support
 
 # HTTP requests for server communication
-requests>=2.31.0
+requests>=2.31.0,<3.0.0
 
 # Additional utilities
-python-dateutil>=2.8.2
-piexif>=1.1.3
+python-dateutil>=2.8.2,<3.0.0
+piexif>=1.1.3,<2.0.0
 
 # System monitoring and rate limiting
-psutil>=5.9.0
-Flask-Limiter>=3.5.0
+psutil>=5.9.0,<6.0.0
+Flask-Limiter>=3.5.0,<4.0.0
+
+# Security and data persistence (for future enhancements)
+redis>=4.5.0,<5.0.0
+cryptography>=41.0.0,<42.0.0
+
+# Production server requirements
+gunicorn>=21.0.0,<22.0.0
+gevent>=23.0.0,<24.0.0
+
+# Logging and monitoring
+structlog>=23.0.0,<24.0.0
