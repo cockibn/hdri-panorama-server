@@ -230,8 +230,8 @@ class PanoramaProcessor:
                 logger.warning(f"🚨 FORCED DEBUG - FIRST CAPTURE POINT: {capture_points[0]}")
                 logger.warning(f"🚨 FORCED DEBUG - CAPTURE POINT KEYS: {list(capture_points[0].keys()) if capture_points[0] else 'None'}")
             
-            # Pass original EXIF data to the stitcher for iPhone optimization
-            panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points, progress_callback, original_exif_data)
+            # Pass original EXIF data and session data to the stitcher for iPhone optimization
+            panorama, quality_metrics = self.stitcher.stitch_panorama(images, capture_points, progress_callback, original_exif_data, session_data)
             
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "Stitching complete. Saving HDR panorama...")
             

@@ -22,6 +22,7 @@ class CorrectHuginStitcher:
     
     def __init__(self, output_resolution: str = "6K"):
         self.temp_dir = None
+        self.geocpset_used = False  # Track if geocpset was used for control points
         self._verify_hugin_installation()
         
         # Standard resolution options
@@ -57,7 +58,8 @@ class CorrectHuginStitcher:
     
     def stitch_panorama(self, images: List[np.ndarray], capture_points: List[Dict], 
                        progress_callback: Optional[Callable] = None,
-                       exif_data: List[Dict] = None) -> Tuple[np.ndarray, Dict]:
+                       exif_data: List[Dict] = None,
+                       session_data: Dict = None) -> Tuple[np.ndarray, Dict]:
         """
         Official Hugin panorama workflow based on 2024 documentation.
         """
@@ -68,6 +70,7 @@ class CorrectHuginStitcher:
         try:
             with tempfile.TemporaryDirectory(prefix="hugin_correct_") as temp_dir:
                 self.temp_dir = temp_dir
+                self.geocpset_used = False  # Reset for each new panorama
                 logger.info(f"🚀 Starting official Hugin workflow in {temp_dir}")
                 
                 if progress_callback:
@@ -88,10 +91,18 @@ class CorrectHuginStitcher:
                 self.control_points_found = self._count_control_points(cp_project)
                 
                 # Step 3: Clean control points (Official Hugin workflow)
-                if progress_callback:
-                    progress_callback(0.40, "Cleaning control points...")
-                
-                clean_project = self._clean_control_points(cp_project)
+                # FIXED: Skip cpclean when geocpset was used to avoid removing geometric control points
+                if self.geocpset_used:
+                    logger.info("⚠️ Skipping cpclean - geocpset control points need preservation")
+                    logger.info("🔧 geocpset creates geometric control points that cpclean would remove")
+                    clean_project = cp_project  # Use cp_project directly without cleaning
+                    if progress_callback:
+                        progress_callback(0.40, "Preserving geocpset control points (skipping cpclean)...")
+                else:
+                    if progress_callback:
+                        progress_callback(0.40, "Cleaning control points...")
+                    
+                    clean_project = self._clean_control_points(cp_project)
                 
                 # Step 3.5: Detect lines for geometric consistency (RESEARCH-BASED)
                 if progress_callback:
@@ -228,7 +239,7 @@ class CorrectHuginStitcher:
             logger.info(f"🔍 POSITIONING DETAILS: {' | '.join(positioning_results)}")
             
             if has_positioning:
-                self._generate_positioned_project(image_paths, capture_points, project_file, original_exif_data)
+                self._generate_positioned_project(image_paths, capture_points, project_file, original_exif_data, session_data)
             else:
                 logger.warning(f"⚠️ No valid azimuth/elevation data - falling back to basic pto_gen")
                 cmd = ["pto_gen", "-o", project_file] + image_paths
@@ -242,9 +253,24 @@ class CorrectHuginStitcher:
         logger.info(f"✅ Generated project file with {len(image_paths)} images")
         return project_file
     
-    def _generate_positioned_project(self, image_paths: List[str], capture_points: List[Dict], project_file: str, original_exif_data: List = None):
+    def _generate_positioned_project(self, image_paths: List[str], capture_points: List[Dict], project_file: str, original_exif_data: List = None, session_data: Dict = None):
         """Generate PTO file with ARKit positioning data."""
         logger.info(f"🎯 Generating positioned project with {len(capture_points)} ARKit positions")
+        
+        # CALIBRATION REFERENCE PROCESSING (Backward Compatible)
+        calibration_reference = None
+        if session_data and 'calibrationReference' in session_data:
+            calibration_reference = session_data['calibrationReference']
+            logger.info(f"🎯 CALIBRATION REFERENCE FOUND: azimuth={calibration_reference.get('azimuth', 0):.1f}°, elevation={calibration_reference.get('elevation', 0):.1f}°")
+            logger.info(f"🔄 Will apply coordinate system alignment based on calibration reference")
+        else:
+            logger.info(f"📍 No calibration reference - using absolute coordinate system (backward compatible)")
+        
+        # Calculate calibration offset for coordinate system alignment
+        calibration_azimuth_offset = 0.0
+        if calibration_reference:
+            calibration_azimuth_offset = calibration_reference.get('azimuth', 0.0)
+            logger.info(f"🔄 Calibration offset: {calibration_azimuth_offset:.1f}° - will rotate all coordinates")
         
         # iPhone ultra-wide camera parameters (106.2° FOV measured)
         fov = 106.2
@@ -292,7 +318,7 @@ class CorrectHuginStitcher:
             nx = (wrap_azimuth + 180) / 360
             nx = nx % 1.0
             yaw = nx * 360 - 180
-            pitch = elevation
+            pitch = -elevation  # FIXED: Invert for iOS Y-axis compensation
             logger.info(f"🔍        → Hugin: yaw={yaw:7.2f}°, pitch={pitch:6.2f}° | nx={nx:.3f}")
             
             # Check for suspicious coordinate patterns
@@ -381,9 +407,21 @@ class CorrectHuginStitcher:
             # Write image lines with ARKit positioning
             for i, (img_path, capture_point) in enumerate(zip(image_paths, capture_points)):
                 # Convert ARKit coordinates to Hugin angles
-                azimuth = capture_point.get('azimuth', 0.0)  # ARKit azimuth
+                azimuth_raw = capture_point.get('azimuth', 0.0)  # ARKit azimuth (relative to calibration)
                 elevation = capture_point.get('elevation', 0.0)  # ARKit elevation  
                 position = capture_point.get('position', [0.0, 0.0, 0.0])  # 3D position [x,y,z]
+                
+                # CALIBRATION REFERENCE ALIGNMENT (Backward Compatible)
+                # Apply calibration offset to align coordinate systems
+                if calibration_azimuth_offset != 0.0:
+                    # Subtract calibration offset to align with geographic coordinates
+                    # This converts from "relative to calibration" to "absolute geographic"
+                    azimuth = (azimuth_raw - calibration_azimuth_offset) % 360
+                    logger.debug(f"🔄 Image {i}: calibration-aligned azimuth: {azimuth_raw:.1f}° - {calibration_azimuth_offset:.1f}° = {azimuth:.1f}°")
+                else:
+                    # No calibration reference - treat as absolute coordinates (backward compatible)
+                    azimuth = azimuth_raw
+                    logger.debug(f"📍 Image {i}: using absolute azimuth: {azimuth:.1f}° (no calibration reference)")
                 
                 # For now, use zero roll (could be derived from position if needed)
                 roll = 0.0
@@ -450,11 +488,12 @@ class CorrectHuginStitcher:
                         yaw = -179.0  # Move slightly away from -180°
                     logger.info(f"🔧 Image {i}: Adjusted seam boundary yaw to {yaw:.1f}°")
                 
-                # FIXED: Direct elevation to pitch mapping (no inversion)
-                # ARKit elevation: +90° = up (zenith), -90° = down (nadir)
-                # Hugin pitch: +90° = up (zenith), -90° = down (nadir)
-                # Both use same sign convention - NO INVERSION NEEDED
-                pitch = elevation  # Direct mapping: ARKit elevation = Hugin pitch
+                # CRITICAL FIX: iOS Y-axis inversion requires pitch inversion
+                # iOS equirectangular: y = (1 - ny) * height  ← INVERTS Y-AXIS!
+                # This means: +elevation → top of image, -elevation → bottom of image
+                # But Hugin expects normal spherical: +pitch = up, -pitch = down
+                # Therefore: must invert elevation to compensate for iOS Y-axis inversion
+                pitch = -elevation  # FIXED: Invert to compensate for iOS Y-axis inversion
                 
                 # Calculate normalized Y for logging (iOS reference)
                 ny = (elevation + 90) / 180  # For reference/logging only
@@ -653,37 +692,37 @@ class CorrectHuginStitcher:
         """Step 2: Find control points using optimized strategy for iPhone ultra-wide captures."""
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
-        # Progressive strategy: try iPhone-optimized approach first, then fallbacks
+        # FIXED: Conservative but robust strategy for ultra-wide images
         strategies = [
             {
-                "name": "Ultra-wide professional feature matching",
+                "name": "Ultra-wide conservative matching (best quality)",
                 "cmd": [
                     "cpfind",
                     "--multirow",                    # Multi-row panorama detection
-                    "--sieve1-width=8",             # Aggressive for ultra-wide precision
-                    "--sieve1-height=8",
-                    "--sieve1-size=1000",           # Maximum control points for best accuracy
-                    "--threshold=0.25",             # Lower threshold for more matches
-                    "--ransac-threshold=20",        # Tolerant for ultra-wide geometry
-                    "--ransac-iterations=2000",     # More iterations for better accuracy
+                    "--sieve1-width=20",            # Conservative sieve for quality matches
+                    "--sieve1-height=20",
+                    "--sieve1-size=2000",           # More control points for better connectivity
+                    "--threshold=0.6",              # Higher threshold for quality matches
+                    "--ransac-threshold=10",        # Strict geometric tolerance
+                    "--ransac-iterations=5000",     # Many iterations for robust estimation
                     "--kdtree",                     # Optimized matching algorithm
                     "--celeste",                    # Sky detection and masking
-                    "--downscale=2",               # Process at half resolution first for speed
                     "-o", cp_project,
                     project_file
                 ],
-                "timeout": 1200  # Extended time for thorough matching
+                "timeout": 1800  # Allow more time for thorough matching
             },
             {
-                "name": "Ultra-wide maximum overlap detection", 
+                "name": "Ultra-wide aggressive coverage", 
                 "cmd": [
                     "cpfind",
                     "--multirow",
-                    "--sieve1-width=5",             # Very aggressive for ultra-wide
-                    "--sieve1-height=5",
-                    "--sieve1-size=800",            # Maximum control points
-                    "--threshold=0.15",             # Very low threshold
-                    "--ransac-threshold=25",        # Very tolerant geometry
+                    "--sieve1-width=15",            # Moderate aggressiveness
+                    "--sieve1-height=15",
+                    "--sieve1-size=1500",           # Good control point density
+                    "--threshold=0.4",              # Balanced threshold
+                    "--ransac-threshold=15",        # Moderate geometry tolerance
+                    "--ransac-iterations=3000",     # More iterations
                     "--celeste",                    # Sky masking
                     "-o", cp_project,
                     project_file
@@ -691,7 +730,7 @@ class CorrectHuginStitcher:
                 "timeout": 1500
             },
             {
-                "name": "Basic (official)",
+                "name": "Basic Hugin defaults",
                 "cmd": [
                     "cpfind",
                     "--multirow",
@@ -702,7 +741,7 @@ class CorrectHuginStitcher:
                 "timeout": 900
             },
             {
-                "name": "Minimal distortion (fallback)",
+                "name": "Minimal fallback",
                 "cmd": [
                     "cpfind",
                     "--multirow",
@@ -820,10 +859,12 @@ class CorrectHuginStitcher:
                 new_connectivity = self._validate_pto_connectivity(geocp_project)
                 if new_connectivity:
                     logger.info("✅ geocpset successfully connected all images!")
+                    self.geocpset_used = True  # Mark that geocpset was used
                     return geocp_project
                 else:
                     logger.warning("⚠️ geocpset improved connectivity but some images still isolated")
                     # Return geocpset result anyway as it's likely better
+                    self.geocpset_used = True  # Mark that geocpset was used
                     return geocp_project
             else:
                 logger.warning("⚠️ geocpset failed to create output file")
@@ -871,18 +912,25 @@ class CorrectHuginStitcher:
         has_arkit = self._has_arkit_positioning(project_file)
         
         if has_arkit:
-            logger.info("🎯 Detected ARKit positioning - DISABLING autooptimiser completely")
-            logger.warning("⚠️ ARKit provides perfect positions - optimization causes geometric catastrophe")
-            logger.error("⚠️ EMERGENCY MODE: Skipping autooptimiser to preserve ARKit accuracy")
+            logger.info("🎯 Detected ARKit positioning - Using photometric-only optimization")
+            logger.info("✅ ARKit provides excellent positioning - preserving geometric accuracy")
+            logger.info("🔧 Running conservative optimization for lens and photometric parameters only")
             
-            # EMERGENCY FIX: Skip autooptimiser entirely for ARKit data
-            # Copy input to output without any optimization
-            import shutil
-            shutil.copy2(project_file, opt_project)
+            # FIXED: Use photometric-only optimization for ARKit data
+            # This preserves ARKit positioning while optimizing lens distortion and exposure
+            cmd = [
+                "autooptimiser",
+                "-l",  # Optimize lens parameters (distortion, vignetting)
+                "-s",  # Optimize photometric parameters (exposure, white balance)
+                # Skip -a (position optimization) to preserve ARKit positioning
+                "-o", opt_project,
+                project_file
+            ]
             
-            logger.info("📋 Command: SKIPPED (copying project file unchanged)")
-            logger.info("📋 Using pure ARKit positioning without any optimization")
-            logger.warning("⚠️ This preserves perfect ARKit geometry but skips photometric optimization")
+            logger.info("📋 Command: autooptimiser -l -s (photometric-only optimization)")
+            logger.info("📋 Preserving ARKit positioning while optimizing lens and exposure")
+            
+            self._run_command(cmd, "autooptimiser (ARKit photometric-only)", timeout=600)
             
         else:
             logger.info("🔍 No ARKit positioning - using full optimization")
@@ -1300,10 +1348,10 @@ class CorrectHuginStitcher:
                 if success:
                     logger.info("✅ Emergency OpenCV blending succeeded - panorama recovered!")
                 else:
-                    raise RuntimeError(f"All {len(strategies)} enblend strategies + emergency OpenCV blending failed")
+                    raise RuntimeError("Enblend and emergency OpenCV blending both failed")
             except Exception as e:
                 logger.error(f"❌ Emergency OpenCV blending also failed: {e}")
-                raise RuntimeError(f"All {len(strategies)} enblend strategies + emergency OpenCV blending failed - images may have insufficient overlap or geometric issues")
+                raise RuntimeError("Enblend and emergency OpenCV blending both failed - images may have insufficient overlap or geometric issues")
         
         if not os.path.exists(tiff_output):
             raise RuntimeError("enblend failed to create final panorama")
