@@ -324,11 +324,24 @@ class HuginPipelineService:
             
             self._run_command(cmd, "cpfind", timeout=600)
             
-            # Count control points found
-            self.control_points_found = self._count_control_points(cp_project)
+            # Check if cpfind created output file
+            if not os.path.exists(cp_project):
+                # cpfind found no control points - create empty project file
+                logger.warning("⚠️ cpfind created no output file - likely no control points found")
+                shutil.copy2(project_file, cp_project)
+                self.control_points_found = 0
+            else:
+                # Count control points found
+                self.control_points_found = self._count_control_points(cp_project)
             
             step.complete(success=True, output_files=[cp_project])
             logger.info(f"✅ Found {self.control_points_found} control points")
+            
+            # If no control points found, enable geocpset fallback
+            if self.control_points_found == 0:
+                logger.warning("⚠️ No control points found - will use ARKit positioning (geocpset)")
+                self.geocpset_used = True
+            
             return cp_project
             
         except Exception as e:
