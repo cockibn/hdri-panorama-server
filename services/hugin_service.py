@@ -508,6 +508,9 @@ class HuginPipelineService:
         output_prefix = os.path.join(self.temp_dir, "rendered")
         
         try:
+            # Validate image dimensions before rendering
+            self._validate_image_dimensions(project_file)
+            
             cmd = ["nona", "-m", "TIFF_m", "-o", output_prefix, project_file]
             self._run_command(cmd, "nona", timeout=600)
             
@@ -558,6 +561,73 @@ class HuginPipelineService:
             step.complete(success=False, error=str(e))
             raise HuginPipelineError(f"Image blending failed: {e}")
             
+    def _validate_image_dimensions(self, project_file: str):
+        """Validate that all images in project have consistent dimensions with PTO file."""
+        try:
+            import re
+            
+            with open(project_file, 'r') as f:
+                content = f.read()
+            
+            # Extract image lines from PTO file
+            image_lines = [line for line in content.split('\n') if line.startswith('i ')]
+            
+            for i, line in enumerate(image_lines):
+                # Extract width and height from PTO line (w and h parameters)
+                w_match = re.search(r'w(\d+)', line)
+                h_match = re.search(r'h(\d+)', line)
+                
+                if not w_match or not h_match:
+                    logger.warning(f"⚠️ Could not extract dimensions from PTO line {i}")
+                    continue
+                    
+                pto_width = int(w_match.group(1))
+                pto_height = int(h_match.group(1))
+                
+                # Extract filename (n parameter)
+                n_match = re.search(r'n"([^"]+)"', line)
+                if not n_match:
+                    logger.warning(f"⚠️ Could not extract filename from PTO line {i}")
+                    continue
+                    
+                image_path = n_match.group(1)
+                
+                # Check if file exists and get actual dimensions
+                if not os.path.exists(image_path):
+                    logger.warning(f"⚠️ Image file not found: {image_path}")
+                    continue
+                
+                try:
+                    # Use PIL to get actual image dimensions
+                    from PIL import Image
+                    with Image.open(image_path) as img:
+                        actual_width, actual_height = img.size
+                        
+                    if actual_width != pto_width or actual_height != pto_height:
+                        logger.warning(f"⚠️ Dimension mismatch for {os.path.basename(image_path)}")
+                        logger.warning(f"   PTO: {pto_width}×{pto_height}, Actual: {actual_width}×{actual_height}")
+                        
+                        # Update PTO file with correct dimensions
+                        old_w = f"w{pto_width}"
+                        old_h = f"h{pto_height}"
+                        new_w = f"w{actual_width}"  
+                        new_h = f"h{actual_height}"
+                        
+                        content = content.replace(f"{old_w} {old_h}", f"{new_w} {new_h}")
+                        logger.info(f"✅ Updated PTO dimensions for {os.path.basename(image_path)}: {actual_width}×{actual_height}")
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not validate dimensions for {image_path}: {e}")
+                    
+            # Write back updated PTO file
+            with open(project_file, 'w') as f:
+                f.write(content)
+                
+            logger.info("✅ Image dimension validation completed")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Image dimension validation failed: {e}")
+
     def cleanup(self):
         """Clean up temporary files."""
         if os.path.exists(self.temp_dir):
