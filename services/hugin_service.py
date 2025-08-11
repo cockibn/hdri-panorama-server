@@ -174,15 +174,15 @@ class HuginPipelineService:
             # Step 6: Render images
             tiff_files = self._step_6_render_images(final_project, len(images), progress_callback)
             
-            # Step 7: Blend final panorama
-            panorama_path = self._step_7_blend_images(tiff_files, len(images), progress_callback)
+            # Step 7: Export TIFF files for blending service (microservices architecture)
+            validated_tiffs = self._step_7_return_tiff_files(tiff_files, len(images), progress_callback)
             
             total_time = time.time() - start_time
             
             # Compilation results
             results = {
                 'success': True,
-                'panorama_path': panorama_path,
+                'tiff_files': validated_tiffs,
                 'processing_time': total_time,
                 'pipeline_steps': [
                     {
@@ -364,31 +364,10 @@ class HuginPipelineService:
             step.complete(success=True, output_files=[cp_project])
             logger.info(f"✅ Found {self.control_points_found} control points")
             
-            # If no control points found, use geocpset fallback
-            if self.control_points_found == 0:
-                logger.warning("⚠️ No control points found - attempting geocpset rescue")
-                try:
-                    # Use geocpset to create control points from ARKit positioning
-                    geocpset_project = os.path.join(self.temp_dir, "project_geocpset.pto")
-                    geocpset_cmd = ["geocpset", "-o", geocpset_project, cp_project]
-                    self._run_command(geocpset_cmd, "geocpset")
-                    
-                    # Verify geocpset created control points
-                    geocpset_cp_count = self._count_control_points(geocpset_project)
-                    if geocpset_cp_count > 0:
-                        # Use geocpset output as our control point project
-                        shutil.copy2(geocpset_project, cp_project)
-                        self.control_points_found = geocpset_cp_count
-                        self.geocpset_used = True
-                        logger.info(f"🔧 Geocpset rescue successful: {geocpset_cp_count} control points created")
-                    else:
-                        logger.warning("⚠️ Geocpset produced no control points - proceeding with ARKit positioning only")
-                        self.geocpset_used = True
-                        
-                except Exception as geocpset_error:
-                    logger.error(f"❌ Geocpset rescue failed: {geocpset_error}")
-                    logger.warning("⚠️ Proceeding with ARKit positioning only")
-                    self.geocpset_used = True
+            # Enhanced geocpset fallback - matches backup implementation
+            if self.control_points_found < 100:  # Force geocpset for low control point counts (like backup)
+                logger.warning(f"⚠️ Low control points ({self.control_points_found}) - attempting geocpset rescue")
+                cp_project = self._fix_connectivity_with_geocpset(cp_project)
             
             return cp_project
             
@@ -405,6 +384,41 @@ class HuginPipelineService:
             return len(cp_lines)
         except:
             return 0
+            
+    def _fix_connectivity_with_geocpset(self, project_file: str) -> str:
+        """Use geocpset to connect isolated images based on ARKit positioning - from backup."""
+        try:
+            geocp_project = os.path.join(self.temp_dir, "project_geocp.pto")
+            
+            # geocpset generates control points based on image positions
+            # This is perfect for ARKit data where we have accurate positioning
+            cmd = ["geocpset", "-o", geocp_project, project_file]
+            
+            logger.info("🌍 Running geocpset to connect isolated images using ARKit positioning...")
+            self._run_command(cmd, "geocpset", timeout=300)
+            
+            if os.path.exists(geocp_project):
+                new_cp_count = self._count_control_points(geocp_project)
+                old_cp_count = self._count_control_points(project_file)
+                
+                logger.info(f"📊 geocpset result: {old_cp_count} → {new_cp_count} control points")
+                
+                if new_cp_count > old_cp_count:
+                    logger.info("✅ geocpset successfully improved connectivity!")
+                    self.geocpset_used = True  # Mark that geocpset was used
+                    self.control_points_found = new_cp_count
+                    return geocp_project
+                else:
+                    logger.warning("⚠️ geocpset didn't improve connectivity")
+                    return project_file
+            else:
+                logger.warning("⚠️ geocpset failed to create output file")
+                return project_file
+                
+        except Exception as e:
+            logger.warning(f"⚠️ geocpset failed: {e}")
+            logger.info("📝 Continuing with original control points")
+            return project_file
             
     def _step_3_clean_control_points(self, project_file: str, progress_callback: Optional[Callable]) -> str:
         """Step 3: Clean control points (skip if geocpset used)."""
@@ -598,37 +612,34 @@ class HuginPipelineService:
             step.complete(success=False, error=str(e))
             raise HuginPipelineError(f"Image rendering failed: {e}")
             
-    def _step_7_blend_images(self, tiff_files: List[str], expected_count: int, progress_callback: Optional[Callable]) -> str:
-        """Step 7: Blend images with enblend."""
-        step = HuginStep("enblend", "Multi-band blending")
+    def _step_7_return_tiff_files(self, tiff_files: List[str], expected_count: int, progress_callback: Optional[Callable]) -> List[str]:
+        """Step 7: Return TIFF files for external blending (microservices architecture)."""
+        step = HuginStep("tiff_export", "Exporting rendered TIFFs for blending service")
         step.start()
         self.pipeline_steps.append(step)
         
         if progress_callback:
-            progress_callback(0.9, "Blending final panorama...")
+            progress_callback(0.9, "Preparing for blending...")
             
-        tiff_output = os.path.join(self.temp_dir, "final_panorama.tif")
-        
         try:
-            cmd = [
-                "enblend",
-                "-o", tiff_output,
-                "--wrap=horizontal",
-                "--compression=lzw"
-            ] + tiff_files
-            
-            self._run_command(cmd, "enblend", timeout=1800)  # 30 minutes max
-            
-            if not os.path.exists(tiff_output) or os.path.getsize(tiff_output) == 0:
-                raise HuginPipelineError("enblend produced empty output")
+            # Validate TIFF files exist and are non-empty
+            valid_tiffs = []
+            for tiff_path in tiff_files:
+                if os.path.exists(tiff_path) and os.path.getsize(tiff_path) > 0:
+                    valid_tiffs.append(tiff_path)
+                else:
+                    logger.warning(f"⚠️ Invalid TIFF file: {tiff_path}")
+                    
+            if not valid_tiffs:
+                raise HuginPipelineError("No valid TIFF files for blending")
                 
-            step.complete(success=True, output_files=[tiff_output])
-            logger.info(f"✅ Panorama blended: {os.path.getsize(tiff_output) / 1024 / 1024:.1f}MB")
-            return tiff_output
+            step.complete(success=True, output_files=valid_tiffs)
+            logger.info(f"✅ {len(valid_tiffs)} TIFF files ready for blending service")
+            return valid_tiffs
             
         except Exception as e:
             step.complete(success=False, error=str(e))
-            raise HuginPipelineError(f"Image blending failed: {e}")
+            raise HuginPipelineError(f"TIFF export failed: {e}")
             
     def _validate_image_dimensions(self, project_file: str):
         """Validate that all images in project have consistent dimensions with PTO file."""
