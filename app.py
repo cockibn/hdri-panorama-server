@@ -74,6 +74,150 @@ def validate_job_id(job_id: str) -> bool:
         return False
     return True
 
+def validate_bundle_format(bundle_data):
+    """Validate bundle data format and prevent malicious content."""
+    if not bundle_data.startswith(b"HDRI_BUNDLE_V1\n"):
+        raise ValueError("Invalid bundle format header")
+    
+    if len(bundle_data) > 500 * 1024 * 1024:  # 500MB limit
+        raise ValueError("Bundle exceeds maximum size limit")
+    
+    return True
+
+def validate_image_index(index_str):
+    """Validate image index to prevent path traversal."""
+    try:
+        index = int(index_str)
+        if index < 0 or index > 100:  # Reasonable limits
+            raise ValueError(f"Image index out of range: {index}")
+        return index
+    except ValueError:
+        raise ValueError(f"Invalid image index: {index_str}")
+
+def extract_bundle_images(bundle_file, upload_dir):
+    """Extract images from iOS app bundle format."""
+    image_files = []
+    try:
+        bundle_data = bundle_file.read()
+        validate_bundle_format(bundle_data)
+        
+        parts = bundle_data.split(b'\n', 2)
+        if len(parts) < 3:
+            raise ValueError("Malformed bundle structure")
+            
+        try:
+            image_count = int(parts[1])
+        except ValueError:
+            raise ValueError("Invalid image count in bundle")
+            
+        if image_count <= 0 or image_count > 50:  # Reasonable limits
+            raise ValueError(f"Invalid image count: {image_count}")
+            
+        data = parts[2]
+        original_exif_data = []
+        offset = 0
+        
+        # Extract all images
+        for i in range(image_count):
+            try:
+                header_end = data.find(b'\n', offset)
+                if header_end == -1:
+                    raise ValueError(f"Malformed header for image {i}")
+                    
+                header = data[offset:header_end].decode('utf-8', errors='strict')
+                
+                if ':' not in header:
+                    raise ValueError(f"Invalid header format for image {i}: {header}")
+                    
+                index_str, size_str = header.split(':', 1)
+                
+                # Validate index to prevent path traversal
+                index = validate_image_index(index_str)
+                
+                try:
+                    size = int(size_str)
+                except ValueError:
+                    raise ValueError(f"Invalid size for image {i}: {size_str}")
+                    
+                if size <= 0 or size > 50 * 1024 * 1024:  # 50MB per image limit
+                    raise ValueError(f"Invalid image size for image {i}: {size}")
+                
+                offset = header_end + 1
+                
+                if offset + size > len(data):
+                    raise ValueError(f"Image {i} data extends beyond bundle")
+                
+                image_data = data[offset : offset + size]
+                
+                # Use safe filename construction
+                safe_filename = f"image_{index:04d}.jpg"
+                filepath = upload_dir / safe_filename
+                
+                # Ensure the path is within upload_dir
+                if not filepath.resolve().is_relative_to(upload_dir.resolve()):
+                    raise ValueError(f"Invalid file path for image {i}")
+                
+                filepath.write_bytes(image_data)
+                image_files.append(str(filepath))
+                
+                # Extract EXIF data
+                try:
+                    import piexif
+                    exif_dict = piexif.load(image_data)
+                    original_exif_data.append(exif_dict)
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not extract EXIF from image {index}: {e}")
+                    original_exif_data.append({})
+                
+                offset += size
+                
+            except Exception as image_error:
+                logger.error(f"Failed to extract image {i}: {image_error}")
+                continue
+                
+        logger.info(f"📸 Extracted {len(image_files)} images from bundle")
+        
+        # Save EXIF data for processing
+        exif_file = upload_dir / "original_exif.json"
+        try:
+            import json
+            import base64
+            
+            # Convert EXIF data to JSON-serializable format
+            serialized_exif = []
+            for exif_dict in original_exif_data:
+                serialized_dict = {}
+                for ifd_name, ifd_data in exif_dict.items():
+                    serialized_dict[ifd_name] = {}
+                    for tag, value in ifd_data.items():
+                        if isinstance(value, bytes):
+                            serialized_dict[ifd_name][tag] = {
+                                "type": "bytes",
+                                "data": base64.b64encode(value).decode('utf-8')
+                            }
+                        else:
+                            serialized_dict[ifd_name][tag] = {"data": value}
+                serialized_exif.append(serialized_dict)
+            
+            with open(exif_file, 'w') as f:
+                json.dump(serialized_exif, f)
+                
+            logger.info(f"💾 Saved EXIF data for {len(original_exif_data)} images")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not save EXIF data: {e}")
+            
+        return image_files
+        
+    except Exception as e:
+        logger.error(f"Bundle extraction failed: {e}")
+        # Cleanup any partially extracted files
+        for file_path in image_files:
+            try:
+                Path(file_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        raise ValueError(f"Failed to extract images from bundle: {e}")
+
 jobs: Dict[str, Dict] = {}
 job_lock = threading.Lock()
 cleanup_timer = None  # Global cleanup timer
