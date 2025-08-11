@@ -164,13 +164,28 @@ class BlendingService:
             # Create temporary TIFF output (enblend doesn't support EXR directly)
             temp_tiff = os.path.join(self.temp_dir, "enblend_output.tif")
             
-            # Build enblend command
+            # Build enblend command with configurable options
             cmd = [
                 "enblend",
                 "-o", temp_tiff,
                 "--wrap=horizontal",        # Essential for 360° seamless wrapping
                 "--compression=lzw"         # Good compression without quality loss
-            ] + tiff_files
+            ]
+            
+            # Add environment-configurable options for debugging
+            if os.environ.get('ENBLEND_VERBOSE', '').lower() in ('1', 'true'):
+                cmd.append("--verbose")
+                
+            if os.environ.get('ENBLEND_LEVELS'):
+                try:
+                    levels = int(os.environ.get('ENBLEND_LEVELS'))
+                    if 1 <= levels <= 29:  # Valid enblend levels range
+                        cmd.extend(["--levels", str(levels)])
+                except ValueError:
+                    logger.warning("⚠️ Invalid ENBLEND_LEVELS value, using defaults")
+                    
+            # Add TIFF files
+            cmd.extend(tiff_files)
             
             logger.info(f"🔧 Enblend command: {' '.join(cmd)}")
             

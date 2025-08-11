@@ -128,15 +128,22 @@ class ARKitCoordinateService:
         return validation_results
         
     def _assess_coverage_quality(self, azimuth_range: float, elevation_range: float, unique_elevations: int) -> str:
-        """Assess the quality of spherical coverage."""
+        """Assess the quality of spherical coverage with 16-shot pattern validation."""
+        # Optimal 16-shot pattern: 8 horizon + 4 upper + 4 lower
+        # Expected: elevation_range ~90° (from -45° to +45°), unique_elevations = 3
+        
         if elevation_range < 60:
             return "POOR - Limited elevation range, will cause geometric distortion"
         elif unique_elevations < 3:
             return "POOR - Insufficient elevation levels for proper spherical reconstruction"  
         elif azimuth_range < 270:
             return "FAIR - Limited azimuth coverage, may miss full 360°"
-        elif elevation_range > 120 and unique_elevations >= 3:
-            return "EXCELLENT - Full spherical coverage"
+        elif elevation_range >= 80 and unique_elevations >= 3 and azimuth_range >= 315:
+            # Check for optimal 16-shot pattern
+            if 85 <= elevation_range <= 95 and unique_elevations == 3:
+                return "EXCELLENT - Optimal 16-shot pattern detected"
+            else:
+                return "EXCELLENT - Full spherical coverage"
         else:
             return "GOOD - Adequate coverage for panorama reconstruction"
             

@@ -290,15 +290,24 @@ class HuginPipelineService:
             f.write("m g1 i0 f0 m2 p0.00784314\n")
             f.write("\n")
             
-            # Write image lines with converted coordinates
+            # Write image lines with converted coordinates and actual dimensions
             for i, (image_path, coord_data) in enumerate(zip(images, converted_coordinates)):
                 hugin_output = coord_data['hugin_output']
                 yaw = hugin_output['yaw']
                 pitch = hugin_output['pitch']
                 roll = hugin_output['roll']
                 
-                # Write image line with positioning
-                f.write(f'i w3024 h4032 f0 v{iphone_ultrawide_fov:.1f} '
+                # Get actual image dimensions instead of hard-coding
+                try:
+                    from PIL import Image
+                    with Image.open(image_path) as img:
+                        actual_width, actual_height = img.size
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not get dimensions for {image_path}: {e}, using defaults")
+                    actual_width, actual_height = 3024, 4032
+                
+                # Write image line with actual positioning and dimensions
+                f.write(f'i w{actual_width} h{actual_height} f0 v{iphone_ultrawide_fov:.1f} '
                        f'Ra0 Rb0 Rc0 Rd0 Re0 Ef0 Er1 Eb1 '
                        f'r{roll:.6f} p{pitch:.6f} y{yaw:.6f} '
                        f'TrX0 TrY0 TrZ0 Tpy0 Tpp0 '
@@ -355,10 +364,31 @@ class HuginPipelineService:
             step.complete(success=True, output_files=[cp_project])
             logger.info(f"✅ Found {self.control_points_found} control points")
             
-            # If no control points found, enable geocpset fallback
+            # If no control points found, use geocpset fallback
             if self.control_points_found == 0:
-                logger.warning("⚠️ No control points found - will use ARKit positioning (geocpset)")
-                self.geocpset_used = True
+                logger.warning("⚠️ No control points found - attempting geocpset rescue")
+                try:
+                    # Use geocpset to create control points from ARKit positioning
+                    geocpset_project = os.path.join(self.temp_dir, "project_geocpset.pto")
+                    geocpset_cmd = ["geocpset", "-o", geocpset_project, cp_project]
+                    self._run_command(geocpset_cmd, "geocpset")
+                    
+                    # Verify geocpset created control points
+                    geocpset_cp_count = self._count_control_points(geocpset_project)
+                    if geocpset_cp_count > 0:
+                        # Use geocpset output as our control point project
+                        shutil.copy2(geocpset_project, cp_project)
+                        self.control_points_found = geocpset_cp_count
+                        self.geocpset_used = True
+                        logger.info(f"🔧 Geocpset rescue successful: {geocpset_cp_count} control points created")
+                    else:
+                        logger.warning("⚠️ Geocpset produced no control points - proceeding with ARKit positioning only")
+                        self.geocpset_used = True
+                        
+                except Exception as geocpset_error:
+                    logger.error(f"❌ Geocpset rescue failed: {geocpset_error}")
+                    logger.warning("⚠️ Proceeding with ARKit positioning only")
+                    self.geocpset_used = True
             
             return cp_project
             
