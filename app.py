@@ -234,12 +234,19 @@ def require_api_key(f):
         
         # Require API key in production
         if not expected_key:
-            if os.environ.get('FLASK_ENV') == 'development':
-                logger.warning("Development mode: API key not configured")
+            flask_env = os.environ.get('FLASK_ENV', '').lower()
+            # Allow development/testing without API key
+            if flask_env in ['development', 'dev', 'test', 'local']:
+                logger.warning(f"{flask_env.title()} mode: API key not configured - allowing unauthenticated access")
                 return f(*args, **kwargs)
             else:
                 logger.error("Production deployment missing API_KEY environment variable")
-                return jsonify({"error": "Server configuration error"}), 500
+                logger.error("Set API_KEY environment variable or use FLASK_ENV=development for local testing")
+                return jsonify({
+                    "error": "Server configuration error", 
+                    "message": "API_KEY required in production",
+                    "hint": "Set FLASK_ENV=development for local testing"
+                }), 500
             
         if not api_key or api_key != expected_key:
             logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
@@ -734,12 +741,17 @@ def health_check():
                 "memoryUsagePercent": round(memory.percent, 1),
                 "diskFreeGB": round(disk_usage.free / (1024**3), 2)
             },
+            "authentication": {
+                "apiKeyConfigured": bool(os.environ.get('API_KEY')),
+                "environment": os.environ.get('FLASK_ENV', 'production'),
+                "authenticationRequired": not bool(os.environ.get('FLASK_ENV', '').lower() in ['development', 'dev', 'test', 'local'] and not os.environ.get('API_KEY'))
+            },
             "officialHugin": {
-                "architecture": "Official 2024 Workflow",
+                "architecture": "Microservices 2024 Workflow",
                 "researchBased": True,
                 "documentation": "wiki.panotools.org",
-                "pipeline": "pto_gen → cpfind → cpclean → autooptimiser → pano_modify → nona → enblend",
-                "cropModes": ["AUTO (removes black areas)", "NONE (full canvas)"],
+                "pipeline": "coordinate → hugin → blending → quality",
+                "services": ["ARKitCoordinateService", "HuginPipelineService", "BlendingService", "QualityValidationService"],
                 "resolutions": ["4K (4096×2048)", "6K (6144×3072)", "8K (8192×4096)"]
             }
         }
