@@ -46,8 +46,8 @@ RUN echo "Verifying Hugin installation..." && \
     enblend --help > /dev/null && \
     echo "✅ Hugin tools verified successfully"
 
-# Set permissions
-RUN chmod +x install_hugin.sh
+# Set permissions for startup script
+RUN chmod +x start_with_api_key.sh
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
