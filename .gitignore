@@ -1,53 +1,36 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual Environment
-venv/
 env/
-ENV/
+venv/
+.venv/
 
-# Server data directories
-uploads/
-outputs/
-temp/
+# Development files  
 *.log
-
-# OS
+*.tmp
+*.pid
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
 
-# Environment variables
+# Runtime directories
+uploads/*
+outputs/*
+temp/*
+
+# Local environment files
 .env
 .env.local
-.env.production
+
+# Archive directory
+archive/*
+
+# Test outputs
+test_results/
+coordinate_test_results.json
+
+# Deployment logs
+logs/
