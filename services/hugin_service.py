@@ -257,6 +257,24 @@ class HuginPipelineService:
         """Generate PTO file with converted ARKit coordinates."""
         logger.info(f"🎯 Generating positioned project with {len(converted_coordinates)} converted coordinates")
         
+        # Debug: Verify image files exist and get dimensions
+        logger.info(f"🔍 DEBUG: Verifying {len(images)} input images")
+        for i, img_path in enumerate(images):
+            if not os.path.exists(img_path):
+                logger.error(f"❌ Image {i} missing: {img_path}")
+                continue
+                
+            try:
+                from PIL import Image
+                with Image.open(img_path) as img:
+                    width, height = img.size
+                    mode = img.mode
+                    logger.info(f"📸 Image {i}: {os.path.basename(img_path)} {width}×{height} ({mode})")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not read image {i}: {e}")
+                
+        logger.info(f"🔍 DEBUG: Processing {len(converted_coordinates)} coordinate mappings")
+        
         # iPhone ultra-wide lens parameters (research-based)
         iphone_ultrawide_fov = 106.2  # Measured horizontal FOV
         iphone_lens_params = {
@@ -517,6 +535,27 @@ class HuginPipelineService:
             # Find generated TIFF files
             tiff_files = list(Path(self.temp_dir).glob("rendered*.tif"))
             tiff_paths = [str(f) for f in tiff_files]
+            
+            # Debug: Check generated TIFF files
+            logger.info(f"🔍 DEBUG: Found {len(tiff_files)} TIFF files after nona")
+            for tiff_path in tiff_paths:
+                try:
+                    file_size = Path(tiff_path).stat().st_size
+                    logger.info(f"📁 TIFF: {os.path.basename(tiff_path)} ({file_size/1024/1024:.1f}MB)")
+                    
+                    # Check if file has actual image data (not empty/black)
+                    import cv2
+                    img = cv2.imread(tiff_path, cv2.IMREAD_UNCHANGED)
+                    if img is not None:
+                        height, width = img.shape[:2]
+                        mean_val = img.mean() if len(img.shape) == 2 else img.mean()
+                        logger.info(f"📊 TIFF: {width}×{height}, mean value: {mean_val:.3f}")
+                        if mean_val < 0.01:
+                            logger.warning(f"⚠️ TIFF appears very dark/black: {os.path.basename(tiff_path)}")
+                    else:
+                        logger.error(f"❌ Could not read TIFF: {os.path.basename(tiff_path)}")
+                except Exception as debug_error:
+                    logger.warning(f"⚠️ Debug failed for {os.path.basename(tiff_path)}: {debug_error}")
             
             if not tiff_paths:
                 raise HuginPipelineError("nona failed to generate TIFF files")

@@ -182,6 +182,37 @@ class BlendingService:
                 final_output = self._convert_to_final_format(temp_tiff, output_path)
                 
                 output_size_mb = os.path.getsize(final_output) / (1024 * 1024)
+                
+                # Debug: Analyze final blended output
+                try:
+                    import cv2
+                    final_img = cv2.imread(final_output, cv2.IMREAD_UNCHANGED)
+                    if final_img is not None:
+                        height, width = final_img.shape[:2]
+                        mean_val = final_img.mean()
+                        
+                        # Count non-black pixels
+                        gray = cv2.cvtColor(final_img, cv2.COLOR_BGR2GRAY) if len(final_img.shape) == 3 else final_img
+                        non_zero_pixels = cv2.countNonZero(gray)
+                        total_pixels = height * width
+                        black_percentage = ((total_pixels - non_zero_pixels) / total_pixels) * 100
+                        
+                        logger.info(f"🔍 DEBUG Blended Output: {width}×{height}")
+                        logger.info(f"🔍 DEBUG Mean brightness: {mean_val:.3f}")
+                        logger.info(f"🔍 DEBUG Black pixels: {black_percentage:.1f}%")
+                        
+                        if black_percentage > 80:
+                            logger.error(f"❌ CRITICAL: {black_percentage:.1f}% black pixels in final output!")
+                        elif black_percentage > 50:
+                            logger.warning(f"⚠️ HIGH: {black_percentage:.1f}% black pixels")
+                        else:
+                            logger.info(f"✅ GOOD: {black_percentage:.1f}% black pixels")
+                            
+                    else:
+                        logger.error("❌ Could not read final blended output for analysis")
+                except Exception as debug_error:
+                    logger.warning(f"⚠️ Final output debug failed: {debug_error}")
+                
                 strategy.complete(success=True, output_size_mb=output_size_mb)
                 
                 return {

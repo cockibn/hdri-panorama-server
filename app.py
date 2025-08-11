@@ -157,7 +157,33 @@ def extract_bundle_images(bundle_file, upload_dir):
                 if not filepath.resolve().is_relative_to(upload_dir.resolve()):
                     raise ValueError(f"Invalid file path for image {i}")
                 
-                filepath.write_bytes(image_data)
+                # CRITICAL FIX: Apply EXIF orientation correction before saving
+                try:
+                    from PIL import Image, ImageOps
+                    import io
+                    
+                    # Load image data and apply EXIF orientation
+                    temp_image = Image.open(io.BytesIO(image_data))
+                    original_size = temp_image.size
+                    
+                    # Apply EXIF orientation correction
+                    oriented_image = ImageOps.exif_transpose(temp_image)
+                    corrected_size = oriented_image.size
+                    
+                    # Save orientation-corrected image
+                    oriented_image.save(filepath, 'JPEG', quality=95, optimize=True)
+                    
+                    # Log orientation correction
+                    if original_size != corrected_size:
+                        logger.info(f"🔄 Image {index}: EXIF orientation applied {original_size} → {corrected_size}")
+                    else:
+                        logger.debug(f"📸 Image {index}: No orientation correction needed {original_size}")
+                        
+                except Exception as exif_error:
+                    logger.warning(f"⚠️ EXIF orientation failed for image {index}: {exif_error}")
+                    # Fallback to raw image data
+                    filepath.write_bytes(image_data)
+                
                 image_files.append(str(filepath))
                 
                 # Extract EXIF data
@@ -651,6 +677,24 @@ class MicroservicesPanoramaProcessor:
             self._update_job_status(job_id, JobState.FAILED, 0.0, f"Processing failed: {str(e)}")
             raise
             
+    def _load_and_orient_image(self, img_path: str) -> Optional[np.ndarray]:
+        """Load image with proper EXIF orientation handling for Hugin processing."""
+        try:
+            pil_image = Image.open(img_path)
+            # QUALITY FIX: Handle orientation properly for maximum quality preservation
+            # iOS now sends original camera data - apply EXIF orientation once, correctly
+            oriented_image = ImageOps.exif_transpose(pil_image)
+            result = cv2.cvtColor(np.array(oriented_image), cv2.COLOR_RGB2BGR)
+            
+            # Log image dimensions to verify orientation handling
+            height, width = result.shape[:2]
+            logger.info(f"📸 Loaded image: {width}×{height} (orientation-corrected from EXIF)")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Failed to load image {img_path}: {e}")
+            return None
+
     def _create_photosphere_preview(self, panorama: np.ndarray, preview_path: str, session_data: dict):
         """Create JPEG preview with 360° photosphere metadata."""
         try:
