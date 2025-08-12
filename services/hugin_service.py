@@ -336,16 +336,16 @@ class HuginPipelineService:
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
         try:
-            # Expert-recommended strategy with enhanced parameters for 16-point ultra-wide
+            # Ultra-wide optimized strategy for better control point detection
             cmd = [
                 "cpfind",
                 "--multirow",  # Essential for spherical coverage (expert recommendation)
                 "--fullscale", # Use full resolution for better feature detection
-                "--sieve1-width=50",   # Expert's recommended values
-                "--sieve1-height=50",  # Expert's recommended values
-                "--sieve1-size=300",   # Expert's recommended values
-                "--ransac-dist=25",
-                "--celeste",  # Remove sky control points
+                "--sieve1-width=60",   # Increased for ultra-wide distortion
+                "--sieve1-height=60",  # Increased for ultra-wide distortion
+                "--sieve1-size=200",   # Reduced threshold for more control points
+                "--ransac-dist=35",    # More lenient for ultra-wide distortion
+                # Removed --celeste to keep horizon features for panoramas
                 "-o", cp_project,
                 project_file
             ]
@@ -365,8 +365,8 @@ class HuginPipelineService:
             step.complete(success=True, output_files=[cp_project])
             logger.info(f"✅ Found {self.control_points_found} control points")
             
-            # Enhanced geocpset fallback - matches backup implementation
-            if self.control_points_found < 100:  # Force geocpset for low control point counts (like backup)
+            # Enhanced geocpset fallback - trigger earlier for ultra-wide challenges
+            if self.control_points_found < 150:  # Increased threshold for ultra-wide reliability
                 logger.warning(f"⚠️ Low control points ({self.control_points_found}) - attempting geocpset rescue")
                 cp_project = self._fix_connectivity_with_geocpset(cp_project)
             
