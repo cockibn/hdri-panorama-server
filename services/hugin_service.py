@@ -271,18 +271,14 @@ class HuginPipelineService:
                     mode = img.mode
                     logger.info(f"📸 Image {i}: {os.path.basename(img_path)} {width}×{height} ({mode})")
             except Exception as e:
-                logger.warning(f"⚠️ Could not read image {i}: {e}")
+                logger.error(f"❌ Could not read image {i}: {e}")
+                raise HuginPipelineError(f"Failed to read image {img_path}: {e}")  # Propagate error
                 
         logger.info(f"🔍 DEBUG: Processing {len(converted_coordinates)} coordinate mappings")
         
-        # iPhone ultra-wide lens parameters (expert-recommended)
-        iphone_ultrawide_focal = 13  # 13mm equivalent focal length (expert recommendation)
-        iphone_ultrawide_fov = 106.2  # Measured horizontal FOV (backup/validation)
-        iphone_lens_params = {
-            'distortion_a': -0.08,  # Barrel distortion correction
-            'distortion_b': 0.05,   # Secondary correction
-            'distortion_c': -0.01   # Tertiary correction
-        }
+        # iPhone ultra-wide lens parameters (corrected based on expert analysis)
+        iphone_ultrawide_fov = 108.0  # Horizontal FOV in degrees (expert-confirmed ~108°)
+        iphone_projection = 0  # Rectilinear projection (f0 in PTO) - CRITICAL FIX
         
         with open(project_file, 'w') as f:
             # Write PTO header with panorama parameters
@@ -304,24 +300,27 @@ class HuginPipelineService:
                     with Image.open(image_path) as img:
                         actual_width, actual_height = img.size
                 except Exception as e:
-                    logger.warning(f"⚠️ Could not get dimensions for {image_path}: {e}, using defaults")
-                    actual_width, actual_height = 3024, 4032
+                    logger.error(f"❌ Could not get dimensions for {image_path}: {e}")
+                    raise HuginPipelineError(f"Failed to read image dimensions: {e}")  # Propagate error
                 
-                # Write image line with actual positioning and dimensions (expert-recommended focal length)
-                f.write(f'i w{actual_width} h{actual_height} f{iphone_ultrawide_focal} v{iphone_ultrawide_fov:.1f} '
+                # Write image line with rectilinear projection, accurate FOV, and zero-initial distortion
+                f.write(f'i w{actual_width} h{actual_height} f{iphone_projection} v{iphone_ultrawide_fov:.1f} '
                        f'Ra0 Rb0 Rc0 Rd0 Re0 Ef0 Er1 Eb1 '
                        f'r{roll:.6f} p{pitch:.6f} y{yaw:.6f} '
                        f'TrX0 TrY0 TrZ0 Tpy0 Tpp0 '
-                       f'j0 a{iphone_lens_params["distortion_a"]:.6f} '
-                       f'b{iphone_lens_params["distortion_b"]:.6f} '
-                       f'c{iphone_lens_params["distortion_c"]:.6f} '
+                       f'j0 a0 b0 c0 '  # CRITICAL FIX: Initialize distortion to 0
                        f'd0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0 '
                        f'n"{os.path.abspath(image_path)}"\n')
                        
                 logger.debug(f"   📍 Image {i:2d}: y={yaw:.1f}°, p={pitch:.1f}°, r={roll:.1f}°")
             
-            f.write("\n# Variables\n")
-            f.write("v\n")
+            # Add optimization variables (for lens/FOV only, to keep positions fixed)
+            f.write("\n# Optimization variables (lens distortion and FOV, shared across images)\n")
+            f.write("v v0\n")  # Optimize FOV if needed
+            f.write("v a0\n")  # Optimize distortion parameter a
+            f.write("v b0\n")  # Optimize distortion parameter b  
+            f.write("v c0\n")  # Optimize distortion parameter c
+            f.write("\n")
             
         logger.info(f"✅ Generated positioned PTO with ARKit data covering {len(converted_coordinates)} viewpoints")
         
@@ -495,15 +494,14 @@ class HuginPipelineService:
         
         try:
             if self.arkit_mode:
-                # ARKit mode: photometric-only optimization
+                # ARKit mode: Photometric optimization + selective geometry (distortion/FOV) - CRITICAL FIX
                 cmd = [
                     "autooptimiser",
-                    "-l",  # Optimize lens parameters
-                    "-s",  # Optimize photometric parameters
+                    "-m",  # Photometric optimization (was missing!)
                     "-o", opt_project,
                     project_file
                 ]
-                logger.info("📋 Using ARKit photometric-only optimization")
+                logger.info("📋 Using ARKit photometric optimization + selective geometry (distortion)")
             else:
                 # Full optimization for non-ARKit data
                 cmd = [
