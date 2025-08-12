@@ -652,9 +652,22 @@ class MicroservicesPanoramaProcessor:
             preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
             self._create_photosphere_preview(panorama, str(preview_path), session_data)
             
-            # Complete processing
+            # Complete processing with URLs
             total_processing_time = time.time() - start_time
-            self._update_job_status(job_id, JobState.COMPLETED, 1.0, f"Microservices processing complete! {total_processing_time:.1f}s")
+            
+            # Generate access URLs (Railway provides RAILWAY_STATIC_URL or PORT)
+            base_url = os.environ.get('RAILWAY_STATIC_URL', f"http://localhost:{os.environ.get('PORT', '5001')}")
+            preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
+            download_url = f"{base_url}/v1/panorama/result/{job_id}"
+            
+            completion_message = f"✅ Processing complete! {total_processing_time:.1f}s"
+            self._update_job_status(job_id, JobState.COMPLETED, 1.0, completion_message, result_url=download_url)
+            
+            # Log direct access URLs
+            logger.info(f"🎉 Panorama ready for job: {job_id}")
+            logger.info(f"📖 Preview URL: {preview_url}")
+            logger.info(f"⬇️ Download URL: {download_url}")
+            logger.info(f"🔗 Direct links ready for iOS app download")
             
             # Generate comprehensive service bus report
             service_bus_report = self.service_bus.generate_debug_report()
