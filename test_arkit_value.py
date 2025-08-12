@@ -111,7 +111,7 @@ def generate_fake_arkit_coordinates(num_images: int):
             },
             'hugin_output': {
                 'yaw': azimuths[i] if i < len(azimuths) else i * (360 / num_images),
-                'pitch': -(elevations[i] if i < len(elevations) else 0),  # iOS inversion
+                'pitch': (elevations[i] if i < len(elevations) else 0),  # No inversion needed
                 'roll': 0.0
             },
             'debug_info': {

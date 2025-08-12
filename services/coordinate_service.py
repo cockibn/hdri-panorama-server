@@ -230,8 +230,8 @@ class ARKitCoordinateService:
             # 2. Elevation conversion (vertical rotation)  
             # ARKit: +elevation = looking up, -elevation = looking down
             # Hugin: +pitch = looking up, -pitch = looking down
-            # BUT: iOS coordinate system may be inverted
-            pitch = -elevation  # Invert to compensate for iOS Y-axis inversion
+            # FIXED: No inversion needed - both systems use same convention
+            pitch = elevation  # Direct mapping - both systems treat positive as up
             
             # 3. Roll conversion (camera rotation around viewing axis)
             # ARKit provides minimal roll data for panorama capture
@@ -328,10 +328,11 @@ class ARKitCoordinateService:
                 'hugin_system': 'Spherical panorama, yaw/pitch/roll with equirectangular projection',
                 'conversion_notes': [
                     'ARKit azimuth maps directly to Hugin yaw',
-                    'ARKit elevation inverted to Hugin pitch (iOS Y-axis compensation)',
+                    'ARKit elevation maps directly to Hugin pitch (both positive = looking up)',
                     'Roll assumed to be 0° for panorama capture',
                     'Calibration offset applied to align all coordinates',
                     'EXPERT FIXES APPLIED:',
+                    '- CRITICAL: Fixed pitch inversion - removed unnecessary -elevation',
                     '- Fixed nx calculation: added modulo 360 to ensure 0-1 range',
                     '- Fixed ny calculation: inverted vertical mapping (90-elevation)/180',
                     '- Enhanced validation for out-of-bounds normalized coordinates'
