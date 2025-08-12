@@ -574,7 +574,8 @@ class HuginPipelineService:
             # Validate image dimensions before rendering
             self._validate_image_dimensions(project_file)
             
-            cmd = ["nona", "-m", "TIFF_m", "-o", output_prefix, project_file]
+            # Force full canvas output for proper blending alignment
+            cmd = ["nona", "-m", "TIFF_m", f"--crop=0,0,{self.canvas_size[0]},{self.canvas_size[1]}", "-o", output_prefix, project_file]
             self._run_command(cmd, "nona", timeout=600)
             
             # Find generated TIFF files
