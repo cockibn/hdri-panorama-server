@@ -559,7 +559,7 @@ class BlendingService:
             return mask
             
     def _convert_to_final_format(self, input_path: str, output_path: str) -> str:
-        """Convert blended image to final output format."""
+        """Convert blended image to final output format with robust error handling."""
         try:
             # If output is EXR, convert TIFF to EXR
             if output_path.lower().endswith('.exr'):
@@ -573,9 +573,25 @@ class BlendingService:
                             img = img.astype(np.float32) / 65535.0
                         else:
                             img = img.astype(np.float32)
-                            
-                    cv2.imwrite(output_path, img, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
-                    return output_path
+                    
+                    # Try to write EXR with error checking
+                    exr_success = cv2.imwrite(output_path, img, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+                    
+                    if exr_success and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        logger.info(f"✅ Successfully created EXR: {os.path.getsize(output_path)} bytes")
+                        return output_path
+                    else:
+                        logger.warning("⚠️ EXR write failed, falling back to TIFF format")
+                        # Fallback to TIFF format
+                        tiff_output = output_path.replace('.exr', '.tif')
+                        tiff_success = cv2.imwrite(tiff_output, img)
+                        if tiff_success and os.path.exists(tiff_output):
+                            logger.info(f"✅ Fallback TIFF created: {tiff_output}")
+                            return tiff_output
+                        else:
+                            raise Exception("Both EXR and TIFF fallback failed")
+                else:
+                    raise Exception(f"Could not load input image: {input_path}")
                     
             # Otherwise, copy/convert as needed
             if input_path != output_path:

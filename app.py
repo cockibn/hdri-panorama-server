@@ -581,10 +581,20 @@ class MicroservicesPanoramaProcessor:
                 logger.error(f"❌ Blending service failed: {e}")
                 raise Exception(f"Blending failed: {e}")
                 
-            # Load final panorama
+            # Load final panorama (handle both EXR and TIFF formats)
             panorama = cv2.imread(str(output_path), cv2.IMREAD_UNCHANGED)
+            
+            # If EXR loading failed, try TIFF fallback
+            if panorama is None and str(output_path).endswith('.exr'):
+                tiff_fallback = str(output_path).replace('.exr', '.tif')
+                if Path(tiff_fallback).exists():
+                    logger.warning(f"⚠️ EXR loading failed, trying TIFF fallback: {tiff_fallback}")
+                    panorama = cv2.imread(tiff_fallback, cv2.IMREAD_UNCHANGED)
+                    if panorama is not None:
+                        output_path = Path(tiff_fallback)  # Update output path for subsequent operations
+                        
             if panorama is None:
-                raise Exception(f"Failed to load final panorama from {output_path}")
+                raise Exception(f"Failed to load final panorama from {output_path} (tried EXR and TIFF)")
                 
             # STEP 4: Quality Service - Comprehensive analysis
             self._update_job_status(job_id, JobState.PROCESSING, 0.95, "🔍 Analyzing quality...")

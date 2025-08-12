@@ -275,8 +275,9 @@ class HuginPipelineService:
                 
         logger.info(f"🔍 DEBUG: Processing {len(converted_coordinates)} coordinate mappings")
         
-        # iPhone ultra-wide lens parameters (research-based)
-        iphone_ultrawide_fov = 106.2  # Measured horizontal FOV
+        # iPhone ultra-wide lens parameters (expert-recommended)
+        iphone_ultrawide_focal = 13  # 13mm equivalent focal length (expert recommendation)
+        iphone_ultrawide_fov = 106.2  # Measured horizontal FOV (backup/validation)
         iphone_lens_params = {
             'distortion_a': -0.08,  # Barrel distortion correction
             'distortion_b': 0.05,   # Secondary correction
@@ -306,8 +307,8 @@ class HuginPipelineService:
                     logger.warning(f"⚠️ Could not get dimensions for {image_path}: {e}, using defaults")
                     actual_width, actual_height = 3024, 4032
                 
-                # Write image line with actual positioning and dimensions
-                f.write(f'i w{actual_width} h{actual_height} f0 v{iphone_ultrawide_fov:.1f} '
+                # Write image line with actual positioning and dimensions (expert-recommended focal length)
+                f.write(f'i w{actual_width} h{actual_height} f{iphone_ultrawide_focal} v{iphone_ultrawide_fov:.1f} '
                        f'Ra0 Rb0 Rc0 Rd0 Re0 Ef0 Er1 Eb1 '
                        f'r{roll:.6f} p{pitch:.6f} y{yaw:.6f} '
                        f'TrX0 TrY0 TrZ0 Tpy0 Tpp0 '
@@ -336,15 +337,16 @@ class HuginPipelineService:
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
         try:
-            # Ultra-wide conservative strategy for best quality
+            # Expert-recommended strategy with enhanced parameters for 16-point ultra-wide
             cmd = [
                 "cpfind",
-                "--multirow",
-                "--sieve1-width=20",
-                "--sieve1-height=20", 
-                "--sieve1-size=300",
+                "--multirow",  # Essential for spherical coverage (expert recommendation)
+                "--fullscale", # Use full resolution for better feature detection
+                "--sieve1-width=50",   # Expert's recommended values
+                "--sieve1-height=50",  # Expert's recommended values
+                "--sieve1-size=300",   # Expert's recommended values
                 "--ransac-dist=25",
-                "--celeste",
+                "--celeste",  # Remove sky control points
                 "-o", cp_project,
                 project_file
             ]
@@ -542,7 +544,7 @@ class HuginPipelineService:
                 "pano_modify",
                 f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",
                 f"--crop={crop_mode}",
-                "--projection=0",  # Equirectangular
+                "--projection=2",  # FIXED: Equirectangular (was 0=rectilinear)
                 "--fov=360x180",
                 "-o", final_project,
                 project_file
