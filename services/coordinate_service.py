@@ -156,10 +156,10 @@ class ARKitCoordinateService:
         if azimuth_clusters < len(azimuths) * 0.7:
             issues.append("CLUSTERING - Many images at similar azimuths")
             
-        # Check for missing pole coverage
-        if max(elevations) < 60:
+        # Check for missing pole coverage (iPhone-realistic thresholds)
+        if max(elevations) < 45:  # More realistic for iPhone ultra-wide captures
             issues.append("MISSING_UPPER_POLE - No images looking up")
-        if min(elevations) > -60:  
+        if min(elevations) > -45:  # More realistic threshold for iPhone patterns
             issues.append("MISSING_LOWER_POLE - No images looking down")
             
         # Check for elevation gaps

@@ -277,7 +277,7 @@ class HuginPipelineService:
         logger.info(f"🔍 DEBUG: Processing {len(converted_coordinates)} coordinate mappings")
         
         # iPhone ultra-wide lens parameters (corrected based on expert analysis)
-        iphone_ultrawide_fov = 108.0  # Horizontal FOV in degrees (expert-confirmed ~108°)
+        iphone_ultrawide_fov = 106.2  # Horizontal FOV in degrees (documented measured value)
         iphone_projection = 0  # Rectilinear projection (f0 in PTO) - CRITICAL FIX
         
         with open(project_file, 'w') as f:
@@ -494,14 +494,15 @@ class HuginPipelineService:
         
         try:
             if self.arkit_mode:
-                # ARKit mode: Photometric optimization + selective geometry (distortion/FOV) - CRITICAL FIX
+                # ARKit mode: Photometric + lens optimization for ultra-wide distortion - CRITICAL FIX
                 cmd = [
                     "autooptimiser",
-                    "-m",  # Photometric optimization (was missing!)
+                    "-m",  # Photometric optimization
+                    "-l",  # Lens optimization for ultra-wide distortion
                     "-o", opt_project,
                     project_file
                 ]
-                logger.info("📋 Using ARKit photometric optimization + selective geometry (distortion)")
+                logger.info("📋 Using ARKit photometric + lens optimization for ultra-wide distortion")
             else:
                 # Full optimization for non-ARKit data
                 cmd = [

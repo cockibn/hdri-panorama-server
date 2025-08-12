@@ -170,8 +170,8 @@ def extract_bundle_images(bundle_file, upload_dir):
                     oriented_image = ImageOps.exif_transpose(temp_image)
                     corrected_size = oriented_image.size
                     
-                    # Save orientation-corrected image
-                    oriented_image.save(filepath, 'JPEG', quality=95, optimize=True)
+                    # Save orientation-corrected image (high quality to minimize loss)
+                    oriented_image.save(filepath, 'JPEG', quality=98, optimize=True)
                     
                     # Log orientation correction
                     if original_size != corrected_size:

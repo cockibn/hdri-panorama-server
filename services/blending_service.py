@@ -206,9 +206,9 @@ class BlendingService:
                         height, width = final_img.shape[:2]
                         mean_val = final_img.mean()
                         
-                        # Count non-black pixels
+                        # Count non-black pixels (match quality service threshold)
                         gray = cv2.cvtColor(final_img, cv2.COLOR_BGR2GRAY) if len(final_img.shape) == 3 else final_img
-                        non_zero_pixels = cv2.countNonZero(gray)
+                        non_zero_pixels = np.count_nonzero(gray > 5)  # FIXED: Match quality service threshold
                         total_pixels = height * width
                         black_percentage = ((total_pixels - non_zero_pixels) / total_pixels) * 100
                         
