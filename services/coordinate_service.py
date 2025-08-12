@@ -194,6 +194,10 @@ class ARKitCoordinateService:
                 calibration_azimuth_offset = cp.get('azimuth', 0.0)
                 logger.info(f"🎯 CALIBRATION REFERENCE: azimuth={calibration_azimuth_offset:.1f}°")
                 break
+        if calibration_azimuth_offset == 0.0:
+            logger.warning("⚠️ No calibration reference found - coordinates may not be aligned to a common center")
+        else:
+            logger.info(f"📍 Using calibration reference at {calibration_azimuth_offset:.1f}° for coordinate alignment")
                 
         converted_coordinates = []
         
@@ -220,8 +224,8 @@ class ARKitCoordinateService:
             # 1. Azimuth conversion (horizontal rotation)
             # ARKit: 0° = device facing direction, increases clockwise
             # Hugin: 0° = center of panorama, increases counter-clockwise
-            wrap_azimuth = azimuth % 360
             yaw = azimuth  # Direct mapping for now - may need adjustment
+            wrap_azimuth = yaw  # Remove redundant wrapping (already handled in validation)
             
             # 2. Elevation conversion (vertical rotation)  
             # ARKit: +elevation = looking up, -elevation = looking down
@@ -233,9 +237,9 @@ class ARKitCoordinateService:
             # ARKit provides minimal roll data for panorama capture
             roll = 0.0  # Assume no roll for panorama capture
             
-            # 4. Calculate normalized panorama coordinates for debugging
-            nx = (wrap_azimuth + 180) / 360  # Normalized X position in panorama
-            ny = (elevation + 90) / 180      # Normalized Y position in panorama
+            # 4. Calculate normalized panorama coordinates for debugging (FIXED per expert analysis)
+            nx = ((wrap_azimuth + 180) % 360) / 360  # FIXED: Ensure 0-1 range with modulo
+            ny = (90 - elevation) / 180               # FIXED: Correct vertical mapping (top=+90°, bottom=-90°)
             
             # Store conversion result with debugging info
             converted_coord = {
@@ -255,7 +259,8 @@ class ARKitCoordinateService:
                     'wrap_azimuth': wrap_azimuth,
                     'normalized_x': nx,
                     'normalized_y': ny,
-                    'calibration_offset': calibration_azimuth_offset
+                    'calibration_offset': calibration_azimuth_offset,
+                    'coordinate_fixes_applied': 'Expert analysis fixes: nx modulo wrap, ny vertical inversion'
                 },
                 'validation_flags': self._validate_single_coordinate(azimuth, elevation, nx, ny)
             }
@@ -299,6 +304,13 @@ class ARKitCoordinateService:
         if ny < 0.05 or ny > 0.95:
             flags.append("VERTICAL_EXTREME - Near top/bottom edge of panorama")
             
+        # Enhanced validation after expert fixes
+        if not (0.0 <= nx <= 1.0):
+            flags.append(f"INVALID_NX - Normalized X out of bounds: {nx:.3f}")
+            
+        if not (0.0 <= ny <= 1.0):
+            flags.append(f"INVALID_NY - Normalized Y out of bounds: {ny:.3f}")
+            
         return flags
         
     def generate_debug_report(self) -> Dict[str, Any]:
@@ -318,7 +330,11 @@ class ARKitCoordinateService:
                     'ARKit azimuth maps directly to Hugin yaw',
                     'ARKit elevation inverted to Hugin pitch (iOS Y-axis compensation)',
                     'Roll assumed to be 0° for panorama capture',
-                    'Calibration offset applied to align all coordinates'
+                    'Calibration offset applied to align all coordinates',
+                    'EXPERT FIXES APPLIED:',
+                    '- Fixed nx calculation: added modulo 360 to ensure 0-1 range',
+                    '- Fixed ny calculation: inverted vertical mapping (90-elevation)/180',
+                    '- Enhanced validation for out-of-bounds normalized coordinates'
                 ]
             }
         }
