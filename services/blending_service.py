@@ -164,25 +164,42 @@ class BlendingService:
             # Create temporary TIFF output (enblend doesn't support EXR directly)
             temp_tiff = os.path.join(self.temp_dir, "enblend_output.tif")
             
-            # Build enblend command with configurable options
+            # Build optimized enblend command for iPhone ultra-wide panoramas
+            # Optimizations for 16-point iPhone capture pattern with 106.2° FOV:
+            # - Auto pyramid levels for optimal quality/speed balance
+            # - CIELAB colorspace for better color blending 
+            # - Fine masks for seamless ultra-wide image boundaries
+            # - Optimized for photometric consistency over geometric precision
             cmd = [
                 "enblend",
                 "-o", temp_tiff,
                 "--wrap=horizontal",        # Essential for 360° seamless wrapping
-                "--compression=lzw"         # Good compression without quality loss
+                "--compression=lzw",        # Lossless compression
+                "--levels=auto",            # Auto-determine optimal pyramid levels
+                "--blend-colorspace=CIELAB", # Better color blending for photos
+                "--fallback-overlap=0.05",  # Handle small overlaps from ultra-wide
+                "--no-ciecam",             # Skip complex color appearance model (faster)
+                "--fine-mask",             # Generate high-quality seam masks
+                "--optimizer-weights=0:0:1:0", # Focus on photometric optimization
+                "--mask-vectorize=12"      # Vectorize seam boundaries for smoother blending
             ]
             
             # Add environment-configurable options for debugging
             if os.environ.get('ENBLEND_VERBOSE', '').lower() in ('1', 'true'):
                 cmd.append("--verbose")
                 
+            # Override auto levels if manually specified
             if os.environ.get('ENBLEND_LEVELS'):
                 try:
                     levels = int(os.environ.get('ENBLEND_LEVELS'))
                     if 1 <= levels <= 29:  # Valid enblend levels range
-                        cmd.extend(["--levels", str(levels)])
+                        # Replace --levels=auto with manual setting
+                        for i, arg in enumerate(cmd):
+                            if arg.startswith("--levels="):
+                                cmd[i] = f"--levels={levels}"
+                                break
                 except ValueError:
-                    logger.warning("⚠️ Invalid ENBLEND_LEVELS value, using defaults")
+                    logger.warning("⚠️ Invalid ENBLEND_LEVELS value, using auto")
                     
             # Add TIFF files
             cmd.extend(tiff_files)
