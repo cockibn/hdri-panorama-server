@@ -277,7 +277,8 @@ class HuginPipelineService:
         logger.info(f"🔍 DEBUG: Processing {len(converted_coordinates)} coordinate mappings")
         
         # iPhone ultra-wide lens parameters (corrected based on expert analysis)
-        iphone_ultrawide_fov = 106.2  # Horizontal FOV in degrees (documented measured value)
+        # iPhone 11 Pro and newer: ~120° actual FOV measured
+        iphone_ultrawide_fov = 120.0  # Horizontal FOV in degrees (iPhone 11+ ultra-wide)
         iphone_projection = 0  # Rectilinear projection (f0 in PTO) - CRITICAL FIX
         
         with open(project_file, 'w') as f:
@@ -303,12 +304,17 @@ class HuginPipelineService:
                     logger.error(f"❌ Could not get dimensions for {image_path}: {e}")
                     raise HuginPipelineError(f"Failed to read image dimensions: {e}")  # Propagate error
                 
-                # Write image line with rectilinear projection, accurate FOV, and zero-initial distortion
+                # Write image line with rectilinear projection, accurate FOV, and distortion correction
+                # iPhone ultra-wide lens distortion parameters (typical values for barrel distortion)
+                barrel_a = -0.05   # Barrel distortion coefficient (negative for barrel, positive for pincushion)
+                barrel_b = 0.01    # Secondary distortion coefficient
+                barrel_c = 0.001   # Tertiary distortion coefficient
+                
                 f.write(f'i w{actual_width} h{actual_height} f{iphone_projection} v{iphone_ultrawide_fov:.1f} '
                        f'Ra0 Rb0 Rc0 Rd0 Re0 Ef0 Er1 Eb1 '
                        f'r{roll:.6f} p{pitch:.6f} y{yaw:.6f} '
                        f'TrX0 TrY0 TrZ0 Tpy0 Tpp0 '
-                       f'j0 a0 b0 c0 '  # CRITICAL FIX: Initialize distortion to 0
+                       f'j0 a{barrel_a} b{barrel_b} c{barrel_c} '  # FIXED: Add distortion correction
                        f'd0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0 '
                        f'n"{os.path.abspath(image_path)}"\n')
                        
@@ -336,16 +342,17 @@ class HuginPipelineService:
         cp_project = os.path.join(self.temp_dir, "project_cp.pto")
         
         try:
-            # Ultra-wide optimized strategy for better control point detection
+            # iPhone ultra-wide optimized strategy for better control point detection
             cmd = [
                 "cpfind",
-                "--multirow",  # Essential for spherical coverage (expert recommendation)
+                "--multirow",  # Essential for spherical coverage
                 "--fullscale", # Use full resolution for better feature detection
-                "--sieve1-width=60",   # Increased for ultra-wide distortion
-                "--sieve1-height=60",  # Increased for ultra-wide distortion
-                "--sieve1-size=200",   # Reduced threshold for more control points
-                "--ransac-dist=35",    # More lenient for ultra-wide distortion
-                # Removed --celeste to keep horizon features for panoramas
+                "--sieve1-width=40",   # Reduced for more sensitive detection
+                "--sieve1-height=40",  # Reduced for more sensitive detection  
+                "--sieve1-size=100",   # Lower threshold for more control points
+                "--ransac-dist=50",    # More lenient for ultra-wide distortion
+                "--kall",             # Keep all control points (less filtering)
+                # Removed --celeste to preserve horizon features
                 "-o", cp_project,
                 project_file
             ]
@@ -354,8 +361,31 @@ class HuginPipelineService:
             
             # Check if cpfind created output file
             if not os.path.exists(cp_project):
-                # cpfind found no control points - create empty project file
-                logger.warning("⚠️ cpfind created no output file - likely no control points found")
+                # Primary strategy failed - try fallback with even more lenient parameters
+                logger.warning("⚠️ Primary cpfind strategy failed - trying fallback...")
+                
+                fallback_cmd = [
+                    "cpfind",
+                    "--multirow",
+                    "--sieve1-width=30",   # Even more sensitive
+                    "--sieve1-height=30", 
+                    "--sieve1-size=50",    # Very low threshold
+                    "--ransac-dist=100",   # Very lenient for ultra-wide
+                    "--kall",             # Keep all points
+                    "--downscale=2",      # Use smaller images for faster processing
+                    "-o", cp_project,
+                    project_file
+                ]
+                
+                try:
+                    self._run_command(fallback_cmd, "cpfind-fallback", timeout=300)
+                except Exception as fallback_error:
+                    logger.warning(f"⚠️ Fallback cpfind also failed: {fallback_error}")
+            
+            # Final check for output file
+            if not os.path.exists(cp_project):
+                # Both strategies failed - create empty project file
+                logger.warning("⚠️ All cpfind strategies failed - no control points found")
                 shutil.copy2(project_file, cp_project)
                 self.control_points_found = 0
             else:

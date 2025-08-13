@@ -162,16 +162,21 @@ def extract_bundle_images(bundle_file, upload_dir):
                     from PIL import Image, ImageOps
                     import io
                     
-                    # Load image data and apply EXIF orientation
-                    temp_image = Image.open(io.BytesIO(image_data))
-                    original_size = temp_image.size
-                    
-                    # Apply EXIF orientation correction
-                    oriented_image = ImageOps.exif_transpose(temp_image)
-                    corrected_size = oriented_image.size
-                    
-                    # Save orientation-corrected image (high quality to minimize loss)
-                    oriented_image.save(filepath, 'JPEG', quality=98, optimize=True)
+                    # Load image data and apply EXIF orientation with proper cleanup
+                    with Image.open(io.BytesIO(image_data)) as temp_image:
+                        original_size = temp_image.size
+                        
+                        # Apply EXIF orientation correction
+                        oriented_image = ImageOps.exif_transpose(temp_image)
+                        corrected_size = oriented_image.size
+                        
+                        # Save orientation-corrected image (high quality to minimize loss)
+                        try:
+                            oriented_image.save(filepath, 'JPEG', quality=98, optimize=True)
+                        finally:
+                            # Ensure oriented_image is cleaned up
+                            if oriented_image != temp_image:  # Only close if it's a new image
+                                oriented_image.close()
                     
                     # Log orientation correction
                     if original_size != corrected_size:
