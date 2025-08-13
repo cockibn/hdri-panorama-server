@@ -647,6 +647,24 @@ class MicroservicesPanoramaProcessor:
                         self.processing_time = time.time() - start_time
                 quality_metrics = MockMetrics()
                 
+            # Create debug overlay (coordinate positioning vs result)
+            self._update_job_status(job_id, JobState.PROCESSING, 0.97, "Creating debug overlay...")
+            try:
+                from create_overlay_service import create_debug_overlay_for_job
+                
+                # Find debug coordinate image  
+                debug_image_path = f"/tmp/coordinate_debug_{job_id}.png"
+                if os.path.exists(debug_image_path):
+                    overlay_path = create_debug_overlay_for_job(job_id, debug_image_path, str(output_path))
+                    if overlay_path:
+                        logger.info(f"🎨 Debug overlay created: {overlay_path}")
+                    else:
+                        logger.warning("⚠️ Debug overlay creation failed")
+                else:
+                    logger.info(f"📍 No debug image found at: {debug_image_path}")
+            except Exception as overlay_error:
+                logger.warning(f"⚠️ Debug overlay creation failed: {overlay_error}")
+            
             # Create preview
             self._update_job_status(job_id, JobState.PROCESSING, 0.98, "Creating preview...")
             preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
@@ -993,6 +1011,44 @@ def view_coordinate_debug(job_id: str):
     
     logger.info(f"🎨 Serving coordinate debug for job {job_id} - file: {debug_path}")
     return send_file(debug_path, mimetype='image/png')
+
+@app.route('/v1/panorama/overlay/<job_id>', methods=['GET'])
+def view_debug_overlay(job_id: str):
+    """View debug overlay combining coordinates with panorama result"""
+    # SECURITY: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        abort(400)
+    
+    with job_lock:
+        job = jobs.get(job_id)
+    if not job:
+        abort(404)
+    
+    # Look for debug overlay image
+    overlay_path = f"/tmp/debug_overlay_{job_id}.jpg"
+    
+    if not os.path.exists(overlay_path):
+        return f"""
+        <html>
+        <head><title>Debug Overlay - Job {job_id}</title></head>
+        <body>
+        <h2>🎨 Debug Overlay</h2>
+        <p><strong>Job ID:</strong> {job_id}</p>
+        <p><strong>Status:</strong> Overlay not found or expired</p>
+        <p>Debug overlays are created automatically during processing and show coordinate positioning vs final panorama result.</p>
+        <p>Available debug visualizations:</p>
+        <ul>
+        <li><a href="/v1/panorama/debug/{job_id}">Coordinate Debug (grid + dots)</a></li>
+        <li><a href="/v1/panorama/preview/{job_id}">Panorama Preview</a></li>
+        </ul>
+        </body>
+        </html>
+        """, 200, {'Content-Type': 'text/html'}
+    
+    file_size = os.path.getsize(overlay_path) / (1024 * 1024)
+    logger.info(f"🎨 Serving debug overlay for job {job_id} - file size: {file_size:.1f}MB")
+    return send_file(overlay_path, mimetype='image/jpeg')
 
 @app.route('/health', methods=['GET'])
 def health_check():
