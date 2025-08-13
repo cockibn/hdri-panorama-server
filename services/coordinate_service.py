@@ -289,38 +289,64 @@ class ARKitCoordinateService:
         
         
         
-        # DEBUG: Create coordinate visualization
+        # DEBUG: Create coordinate visualization with improved job ID detection
         try:
-            from simple_coordinate_debug import create_coordinate_debug_image
-            
-            # Try to get job ID from current context (if available)
+            # More robust job ID detection from context
             import inspect
             job_id = None
+            
+            # Check multiple stack frames for job_id
             for frame_info in inspect.stack():
                 frame = frame_info.frame
-                if 'job_id' in frame.f_locals:
-                    job_id = frame.f_locals['job_id']
+                frame_locals = frame.f_locals
+                
+                # Look for job_id in various forms
+                if 'job_id' in frame_locals:
+                    job_id = frame_locals['job_id']
+                    logger.debug(f"🔍 Found job_id in frame: {job_id}")
                     break
+                elif hasattr(frame_locals.get('self'), '__dict__'):
+                    # Check if self has job_id attribute
+                    if hasattr(frame_locals['self'], 'current_job_id'):
+                        job_id = frame_locals['self'].current_job_id
+                        logger.debug(f"🔍 Found job_id in self: {job_id}")
+                        break
+            
+            # Create debug image regardless of job_id
+            from simple_coordinate_debug import create_coordinate_debug_image
             
             if job_id:
                 debug_filename = f"coordinate_debug_{job_id}.png"
+                debug_path = f"/tmp/{debug_filename}"
+                logger.info(f"🎨 Creating job-specific debug image: {debug_filename}")
             else:
                 debug_filename = f"coordinate_debug_{len(converted_coordinates)}_points.png"
+                debug_path = f"/tmp/{debug_filename}"
+                logger.warning(f"⚠️ Job ID not found, creating generic debug image: {debug_filename}")
                 
-            debug_path = f"/tmp/{debug_filename}"
+            # Create the debug visualization
             create_coordinate_debug_image(capture_points, debug_path, 
                                         title=f"Coordinate Debug - {len(converted_coordinates)} Points")
             
-            if job_id:
-                # Create a viewable URL for the debug image
-                debug_url = f"hdri-panorama-server-production.up.railway.app/v1/panorama/debug/{job_id}"
-                logger.info(f"🎨 Coordinate debug visualization: {debug_path}")
-                logger.info(f"🔗 View debug image: https://{debug_url}")
+            # Verify the file was created
+            import os
+            if os.path.exists(debug_path):
+                file_size = os.path.getsize(debug_path)
+                logger.info(f"✅ Debug image created: {debug_path} ({file_size} bytes)")
+                
+                if job_id:
+                    # Create viewable URL
+                    debug_url = f"hdri-panorama-server-production.up.railway.app/v1/panorama/debug/{job_id}"
+                    logger.info(f"🔗 View debug image: https://{debug_url}")
+                else:
+                    logger.info(f"🎨 Debug image available at: {debug_path}")
             else:
-                logger.info(f"🎨 Coordinate debug visualization: {debug_path}")
+                logger.error(f"❌ Debug image creation failed - file not found: {debug_path}")
                 
         except Exception as debug_error:
-            logger.warning(f"⚠️ Debug visualization failed: {debug_error}")
+            logger.error(f"❌ Debug visualization failed: {debug_error}")
+            import traceback
+            logger.debug(f"Debug error traceback: {traceback.format_exc()}")
         logger.info(f"✅ Coordinate conversion complete: {len(converted_coordinates)} points")
         logger.info(f"   Yaw range: {self.conversion_stats['coordinate_ranges']['yaw_range'][0]:.1f}° to {self.conversion_stats['coordinate_ranges']['yaw_range'][1]:.1f}°")
         logger.info(f"   Pitch range: {self.conversion_stats['coordinate_ranges']['pitch_range'][0]:.1f}° to {self.conversion_stats['coordinate_ranges']['pitch_range'][1]:.1f}°")
