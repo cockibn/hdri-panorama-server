@@ -43,6 +43,20 @@ class BlendingStrategy:
         self.success = False
         self.error = None
         self.output_size_mb = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'name': self.name,
+            'description': self.description,
+            'timeout': self.timeout,
+            'start_time': self.start_time,
+            'end_time': self.end_time,
+            'success': self.success,
+            'error': self.error,
+            'output_size_mb': self.output_size_mb,
+            'execution_time': (self.end_time - self.start_time) if (self.start_time and self.end_time) else 0.0
+        }
         
     def start(self):
         self.start_time = time.time()
@@ -118,7 +132,7 @@ class BlendingService:
                 result = self._strategy_enblend(tiff_files, output_path, expected_image_count)
                 if result['success']:
                     result['total_time'] = time.time() - start_time
-                    result['blending_attempts'] = self.blending_attempts
+                    result['blending_attempts'] = [attempt.to_dict() for attempt in self.blending_attempts]
                     return result
             except Exception as e:
                 logger.warning(f"⚠️ Enblend strategy failed: {e}")
@@ -128,7 +142,7 @@ class BlendingService:
             result = self._strategy_opencv_multiband(tiff_files, output_path)
             if result['success']:
                 result['total_time'] = time.time() - start_time
-                result['blending_attempts'] = self.blending_attempts
+                result['blending_attempts'] = [attempt.to_dict() for attempt in self.blending_attempts]
                 return result
         except Exception as e:
             logger.warning(f"⚠️ OpenCV multi-band strategy failed: {e}")
@@ -138,7 +152,7 @@ class BlendingService:
             result = self._strategy_simple_blend(tiff_files, output_path)
             if result['success']:
                 result['total_time'] = time.time() - start_time
-                result['blending_attempts'] = self.blending_attempts
+                result['blending_attempts'] = [attempt.to_dict() for attempt in self.blending_attempts]
                 return result
         except Exception as e:
             logger.error(f"❌ Simple blending strategy failed: {e}")
