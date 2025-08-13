@@ -287,6 +287,18 @@ class ARKitCoordinateService:
             }
         }
         
+        
+        
+        # DEBUG: Create coordinate visualization
+        try:
+            from simple_coordinate_debug import create_coordinate_debug_image
+            debug_filename = f"coordinate_debug_{len(converted_coordinates)}_points.png"
+            debug_path = f"/tmp/{debug_filename}"
+            create_coordinate_debug_image(capture_points, debug_path, 
+                                        title=f"Coordinate Debug - {len(converted_coordinates)} Points")
+            logger.info(f"🎨 Coordinate debug visualization: {debug_path}")
+        except Exception as debug_error:
+            logger.warning(f"⚠️ Debug visualization failed: {debug_error}")
         logger.info(f"✅ Coordinate conversion complete: {len(converted_coordinates)} points")
         logger.info(f"   Yaw range: {self.conversion_stats['coordinate_ranges']['yaw_range'][0]:.1f}° to {self.conversion_stats['coordinate_ranges']['yaw_range'][1]:.1f}°")
         logger.info(f"   Pitch range: {self.conversion_stats['coordinate_ranges']['pitch_range'][0]:.1f}° to {self.conversion_stats['coordinate_ranges']['pitch_range'][1]:.1f}°")
