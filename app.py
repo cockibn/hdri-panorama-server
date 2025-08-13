@@ -809,6 +809,16 @@ def process_panorama():
     logger.info(f"Processing job {job_id}")
     session_metadata = json.loads(request.form['session_metadata'])
     
+    # DEBUG: Log session metadata structure to understand what iOS is sending
+    if os.environ.get('ENV') != 'production':
+        logger.info(f"📊 Session metadata keys: {list(session_metadata.keys())}")
+        if 'capturePoints' in session_metadata:
+            logger.info(f"📍 Capture points count: {len(session_metadata['capturePoints'])}")
+        if 'calibrationReference' in session_metadata:
+            logger.info(f"🎯 Calibration reference present: {session_metadata['calibrationReference']}")
+        if 'cameraConfig' in session_metadata:
+            logger.info(f"📸 Camera config: {session_metadata['cameraConfig']}")
+    
     # Check for custom resolution request
     resolution = request.form.get('resolution', '6K')
     if resolution not in ['4K', '6K', '8K']:
