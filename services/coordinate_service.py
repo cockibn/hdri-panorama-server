@@ -292,11 +292,33 @@ class ARKitCoordinateService:
         # DEBUG: Create coordinate visualization
         try:
             from simple_coordinate_debug import create_coordinate_debug_image
-            debug_filename = f"coordinate_debug_{len(converted_coordinates)}_points.png"
+            
+            # Try to get job ID from current context (if available)
+            import inspect
+            job_id = None
+            for frame_info in inspect.stack():
+                frame = frame_info.frame
+                if 'job_id' in frame.f_locals:
+                    job_id = frame.f_locals['job_id']
+                    break
+            
+            if job_id:
+                debug_filename = f"coordinate_debug_{job_id}.png"
+            else:
+                debug_filename = f"coordinate_debug_{len(converted_coordinates)}_points.png"
+                
             debug_path = f"/tmp/{debug_filename}"
             create_coordinate_debug_image(capture_points, debug_path, 
                                         title=f"Coordinate Debug - {len(converted_coordinates)} Points")
-            logger.info(f"🎨 Coordinate debug visualization: {debug_path}")
+            
+            if job_id:
+                # Create a viewable URL for the debug image
+                debug_url = f"hdri-panorama-server-production.up.railway.app/v1/panorama/debug/{job_id}"
+                logger.info(f"🎨 Coordinate debug visualization: {debug_path}")
+                logger.info(f"🔗 View debug image: https://{debug_url}")
+            else:
+                logger.info(f"🎨 Coordinate debug visualization: {debug_path}")
+                
         except Exception as debug_error:
             logger.warning(f"⚠️ Debug visualization failed: {debug_error}")
         logger.info(f"✅ Coordinate conversion complete: {len(converted_coordinates)} points")

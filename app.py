@@ -932,6 +932,58 @@ def preview_result(job_id: str):
     logger.info(f"📸 Serving preview for job {job_id} - file size: {preview_path.stat().st_size} bytes")
     return send_file(str(preview_path), mimetype='image/jpeg')
 
+@app.route('/v1/panorama/debug/<job_id>', methods=['GET'])
+def view_coordinate_debug(job_id: str):
+    """View coordinate debug visualization for a panorama job"""
+    # SECURITY: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        abort(400)
+    
+    with job_lock:
+        job = jobs.get(job_id)
+    if not job:
+        abort(404)
+    
+    # Look for coordinate debug image in temp directories
+    import glob
+    import os
+    
+    # Search common temp locations for debug images
+    debug_patterns = [
+        f"/tmp/coordinate_debug_*_points.png",
+        f"/tmp/**/coordinate_debug_*.png",
+        f"/tmp/coordinate_debug_{job_id}*.png"
+    ]
+    
+    debug_path = None
+    for pattern in debug_patterns:
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            # Get the most recent debug image
+            debug_path = max(matches, key=os.path.getctime)
+            break
+    
+    if not debug_path or not os.path.exists(debug_path):
+        # Return a helpful message instead of 404
+        return f"""
+        <html>
+        <head><title>Debug Image - Job {job_id}</title></head>
+        <body>
+        <h2>🎯 Coordinate Debug Image</h2>
+        <p><strong>Job ID:</strong> {job_id}</p>
+        <p><strong>Status:</strong> Debug image not found or expired</p>
+        <p>Debug images are created during processing and may be cleaned up after completion.</p>
+        <p>To see debug images, check the logs during processing for:</p>
+        <code>🎨 Coordinate debug visualization: /tmp/coordinate_debug_*.png</code>
+        <p><a href="/v1/panorama/preview/{job_id}">← Back to Panorama Preview</a></p>
+        </body>
+        </html>
+        """, 200, {'Content-Type': 'text/html'}
+    
+    logger.info(f"🎨 Serving coordinate debug for job {job_id} - file: {debug_path}")
+    return send_file(debug_path, mimetype='image/png')
+
 @app.route('/health', methods=['GET'])
 def health_check():
     try:
