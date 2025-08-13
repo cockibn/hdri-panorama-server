@@ -166,22 +166,18 @@ class BlendingService:
             
             # Build optimized enblend command for iPhone ultra-wide panoramas
             # Optimizations for 16-point iPhone capture pattern with 106.2° FOV:
-            # - Auto pyramid levels for optimal quality/speed balance
-            # - CIELAB colorspace for better color blending 
-            # - Fine masks for seamless ultra-wide image boundaries
+            # - Manual pyramid levels for optimal quality/speed balance
+            # - RGB colorspace for better compatibility (CIELAB not always supported)
+            # - Fine masks for seamless ultra-wide image boundaries  
             # - Optimized for photometric consistency over geometric precision
             cmd = [
                 "enblend",
                 "-o", temp_tiff,
                 "--wrap=horizontal",        # Essential for 360° seamless wrapping
                 "--compression=lzw",        # Lossless compression
-                "--levels=auto",            # Auto-determine optimal pyramid levels
-                "--blend-colorspace=CIELAB", # Better color blending for photos
-                "--fallback-overlap=0.05",  # Handle small overlaps from ultra-wide
-                "--no-ciecam",             # Skip complex color appearance model (faster)
+                "--levels=29",             # Max pyramid levels for best quality
                 "--fine-mask",             # Generate high-quality seam masks
-                "--optimizer-weights=0:0:1:0", # Focus on photometric optimization
-                "--mask-vectorize=12"      # Vectorize seam boundaries for smoother blending
+                "--no-ciecam"              # Skip complex color appearance model (faster)
             ]
             
             # Add environment-configurable options for debugging
