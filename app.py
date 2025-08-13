@@ -203,6 +203,11 @@ def extract_bundle_images(bundle_file, upload_dir):
                 
         logger.info(f"📸 Extracted {len(image_files)} images from bundle")
         
+        # CRITICAL FIX: Sort image files by filename to ensure correct order
+        # This ensures image_files order matches capturePoints order
+        image_files.sort()
+        logger.info(f"🔄 Sorted image files: {[os.path.basename(f) for f in image_files[:5]]}...")
+        
         # Save EXIF data for processing
         exif_file = upload_dir / "original_exif.json"
         try:
