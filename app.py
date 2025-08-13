@@ -489,7 +489,7 @@ class MicroservicesPanoramaProcessor:
             
             try:
                 validation_results = self.coordinate_service.validate_arkit_data(capture_points)
-                converted_coordinates = self.coordinate_service.convert_arkit_to_hugin(capture_points)
+                converted_coordinates = self.coordinate_service.convert_arkit_to_hugin(capture_points, job_id)
                 
                 # Store coordinate analysis for debugging
                 with job_lock:
@@ -1067,8 +1067,8 @@ def test_coordinate_service():
         # Run validation
         validation_results = coordinate_service.validate_arkit_data(test_capture_points)
         
-        # Run conversion
-        converted_coordinates = coordinate_service.convert_arkit_to_hugin(test_capture_points)
+        # Run conversion (test endpoint uses generic job ID)
+        converted_coordinates = coordinate_service.convert_arkit_to_hugin(test_capture_points, "test_endpoint")
         
         # Generate debug report
         debug_report = coordinate_service.generate_debug_report()

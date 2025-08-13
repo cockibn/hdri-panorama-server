@@ -171,7 +171,7 @@ class ARKitCoordinateService:
                 
         return issues
         
-    def convert_arkit_to_hugin(self, capture_points: List[Dict]) -> List[Dict[str, Any]]:
+    def convert_arkit_to_hugin(self, capture_points: List[Dict], job_id: str = None) -> List[Dict[str, Any]]:
         """
         Convert ARKit coordinate data to Hugin panorama coordinates.
         
@@ -289,27 +289,19 @@ class ARKitCoordinateService:
         
         
         
-        # DEBUG: Create coordinate visualization with improved job ID detection
+        # DEBUG: Create coordinate visualization 
         try:
-            # More robust job ID detection from context
-            import inspect
-            job_id = None
-            
-            # Check multiple stack frames for job_id
-            for frame_info in inspect.stack():
-                frame = frame_info.frame
-                frame_locals = frame.f_locals
-                
-                # Look for job_id in various forms
-                if 'job_id' in frame_locals:
-                    job_id = frame_locals['job_id']
-                    logger.debug(f"🔍 Found job_id in frame: {job_id}")
-                    break
-                elif hasattr(frame_locals.get('self'), '__dict__'):
-                    # Check if self has job_id attribute
-                    if hasattr(frame_locals['self'], 'current_job_id'):
-                        job_id = frame_locals['self'].current_job_id
-                        logger.debug(f"🔍 Found job_id in self: {job_id}")
+            # Use passed job_id parameter directly (more reliable than stack inspection)
+            if not job_id:
+                # Fallback: try to detect from context if not passed
+                import inspect
+                for frame_info in inspect.stack():
+                    frame = frame_info.frame
+                    frame_locals = frame.f_locals
+                    
+                    if 'job_id' in frame_locals:
+                        job_id = frame_locals['job_id']
+                        logger.debug(f"🔍 Found job_id in frame: {job_id}")
                         break
             
             # Create debug image regardless of job_id
