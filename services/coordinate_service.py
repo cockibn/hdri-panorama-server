@@ -40,7 +40,7 @@ class ARKitCoordinateService:
         
     def validate_arkit_data(self, capture_points: List[Dict]) -> Dict[str, Any]:
         """
-        Comprehensive validation of ARKit capture point data.
+        Comprehensive validation of iOS ARKit capture point data.
         
         Args:
             capture_points: List of capture points with azimuth/elevation data
@@ -219,13 +219,14 @@ class ARKitCoordinateService:
             elevation = max(-90, min(90, elevation))
             
             # CRITICAL COORDINATE CONVERSION
-            # ARKit → Hugin coordinate system transformation
+            # iOS ARKit → Hugin coordinate system transformation
             
             # 1. Azimuth conversion (horizontal rotation)
-            # ARKit: 0° = device facing direction, increases clockwise
-            # Hugin: 0° = center of panorama, increases counter-clockwise
-            yaw = azimuth  # Direct mapping for now - may need adjustment
-            wrap_azimuth = yaw  # Remove redundant wrapping (already handled in validation)
+            # iOS: 0° = East (+X axis), increases counter-clockwise (mathematical convention)
+            # Hugin: 0° = North, increases clockwise (navigation convention)
+            # CONVERSION: Rotate coordinate system and reverse direction
+            yaw = (90 - azimuth) % 360  # Convert from counter-clockwise-from-East to clockwise-from-North
+            wrap_azimuth = yaw
             
             # 2. Elevation conversion (vertical rotation)  
             # ARKit: +elevation = looking up, -elevation = looking down
@@ -237,9 +238,9 @@ class ARKitCoordinateService:
             # ARKit provides minimal roll data for panorama capture
             roll = 0.0  # Assume no roll for panorama capture
             
-            # 4. Calculate normalized panorama coordinates for debugging (FIXED per expert analysis)
-            nx = ((wrap_azimuth + 180) % 360) / 360  # FIXED: Ensure 0-1 range with modulo
-            ny = (90 - elevation) / 180               # FIXED: Correct vertical mapping (top=+90°, bottom=-90°)
+            # 4. Calculate normalized panorama coordinates for equirectangular projection
+            nx = ((wrap_azimuth + 180) % 360) / 360  # Center panorama at yaw=0° (North)
+            ny = (90 - elevation) / 180               # Correct vertical mapping (top=+90°, bottom=-90°)
             
             # Store conversion result with debugging info
             converted_coord = {
@@ -269,7 +270,9 @@ class ARKitCoordinateService:
             
             # Detailed logging for first few coordinates
             if i < 5 or logger.isEnabledFor(logging.DEBUG):
-                logger.info(f"   📍 Point {i:2d}: ARKit({azimuth:.1f}°,{elevation:.1f}°) → Hugin({yaw:.1f}°,{pitch:.1f}°,{roll:.1f}°) → norm({nx:.3f},{ny:.3f})")
+                logger.info(f"   📍 Point {i:2d}: iOS({azimuth:.1f}°↺,{elevation:.1f}°) → Hugin({yaw:.1f}°↻,{pitch:.1f}°,{roll:.1f}°) → norm({nx:.3f},{ny:.3f})")
+                if i < 3:  # Show conversion detail for first 3 points
+                    logger.info(f"      🔄 Conversion: {azimuth:.1f}°↺ → 90°-{azimuth:.1f}° = {yaw:.1f}°↻")
                 
         # Store conversion statistics for analysis
         self.conversion_stats = {
@@ -324,18 +327,24 @@ class ARKitCoordinateService:
             'last_conversion': self.conversion_stats,
             'calibration_reference': self.calibration_reference,
             'coordinate_system_info': {
-                'arkit_system': 'Device-relative, azimuth (0-360°), elevation (-90° to +90°)',
-                'hugin_system': 'Spherical panorama, yaw/pitch/roll with equirectangular projection',
+                'ios_arkit_system': 'Mathematical convention: azimuth (0-360°) counter-clockwise from East (+X), elevation (-90° to +90°)',
+                'hugin_system': 'Navigation convention: yaw clockwise from North, pitch up/down, equirectangular projection',
                 'conversion_notes': [
-                    'ARKit azimuth maps directly to Hugin yaw',
-                    'ARKit elevation maps directly to Hugin pitch (both positive = looking up)',
-                    'Roll assumed to be 0° for panorama capture',
-                    'Calibration offset applied to align all coordinates',
-                    'EXPERT FIXES APPLIED:',
-                    '- CRITICAL: Fixed pitch inversion - removed unnecessary -elevation',
-                    '- Fixed nx calculation: added modulo 360 to ensure 0-1 range',
-                    '- Fixed ny calculation: inverted vertical mapping (90-elevation)/180',
-                    '- Enhanced validation for out-of-bounds normalized coordinates'
+                    'COORDINATE SYSTEM CONVERSION:',
+                    '- iOS: 0° = East (+X), increases counter-clockwise (mathematical)',
+                    '- Hugin: 0° = North, increases clockwise (navigation)',
+                    '- Conversion: yaw = (90° - azimuth) % 360° (rotate system + reverse direction)',
+                    'ELEVATION MAPPING:',
+                    '- iOS elevation maps directly to Hugin pitch (both positive = looking up)',
+                    '- Roll assumed to be 0° for panorama capture',
+                    'CALIBRATION:',
+                    '- Calibration offset applied to align all coordinates to common reference',
+                    'COORDINATE FIXES APPLIED:',
+                    '- CRITICAL: Fixed azimuth direction conversion (mathematical → navigation)',
+                    '- Fixed pitch mapping - direct elevation to pitch (no inversion)',
+                    '- Fixed nx calculation: proper azimuth conversion with modulo',
+                    '- Fixed ny calculation: correct vertical mapping (90-elevation)/180',
+                    '- Enhanced validation for coordinate system consistency'
                 ]
             }
         }
