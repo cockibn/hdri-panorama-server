@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y \
     libwebp-dev libopenjp2-7-dev \
     # Hugin and related tools
     hugin hugin-tools enblend enfuse \
-    # Additional dependencies
-    libgl1-mesa-glx libglib2.0-0 \
+    # Additional dependencies (fixed for newer Debian)
+    libgl1-mesa-dev libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create application directory
