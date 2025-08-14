@@ -68,7 +68,7 @@ class HuginPipelineService:
     debugging, validation, and error handling.
     """
     
-    def __init__(self, temp_dir: Optional[str] = None, canvas_size: Tuple[int, int] = (6144, 3072)):
+    def __init__(self, temp_dir: Optional[str] = None, canvas_size: Tuple[int, int] = (8192, 4096)):
         self.temp_dir = temp_dir or tempfile.mkdtemp(prefix="hugin_pipeline_")
         self.canvas_size = canvas_size
         self.pipeline_steps = []
@@ -557,23 +557,26 @@ class HuginPipelineService:
             raise HuginPipelineError(f"Parameter optimization failed: {e}")
             
     def _step_5_set_output(self, project_file: str, progress_callback: Optional[Callable]) -> str:
-        """Step 5: Set output parameters."""
-        step = HuginStep("pano_modify", "Set output parameters")
+        """Step 5: Set output parameters with optimal canvas size."""
+        step = HuginStep("pano_modify", "Calculate optimal output parameters")
         step.start()
         self.pipeline_steps.append(step)
         
         if progress_callback:
-            progress_callback(0.7, "Setting output parameters...")
+            progress_callback(0.7, "Calculating optimal canvas size...")
             
         final_project = os.path.join(self.temp_dir, "project_final.pto")
         
         try:
             crop_mode = os.environ.get('PANORAMA_CROP_MODE', 'AUTO')
+            
+            # CRITICAL FIX: Use AUTO canvas sizing based on input image resolution
+            # This prevents upscaling and preserves iPhone image quality
             cmd = [
                 "pano_modify",
-                f"--canvas={self.canvas_size[0]}x{self.canvas_size[1]}",
+                "--canvas=AUTO",  # Let Hugin calculate optimal size from input images
                 f"--crop={crop_mode}",
-                "--projection=2",  # FIXED: Equirectangular (was 0=rectilinear)
+                "--projection=2",  # Equirectangular
                 "--fov=360x180",
                 "-o", final_project,
                 project_file
@@ -581,8 +584,24 @@ class HuginPipelineService:
             
             self._run_command(cmd, "pano_modify")
             
+            # Read back the calculated optimal canvas size for logging
+            try:
+                with open(final_project, 'r') as f:
+                    content = f.read()
+                    # Extract canvas size from PTO file
+                    import re
+                    canvas_match = re.search(r'p f\d+ w(\d+) h(\d+)', content)
+                    if canvas_match:
+                        optimal_width = int(canvas_match.group(1))
+                        optimal_height = int(canvas_match.group(2))
+                        logger.info(f"📐 Optimal canvas calculated: {optimal_width}×{optimal_height} (preserves input resolution)")
+                    else:
+                        logger.info("📐 Optimal canvas calculated (size detection failed)")
+            except Exception as size_error:
+                logger.debug(f"Could not detect optimal canvas size: {size_error}")
+            
             step.complete(success=True, output_files=[final_project])
-            logger.info(f"✅ Output parameters set: {self.canvas_size[0]}×{self.canvas_size[1]} {crop_mode}")
+            logger.info(f"✅ Output parameters set with optimal canvas sizing")
             return final_project
             
         except Exception as e:
@@ -777,6 +796,6 @@ class HuginPipelineService:
             ]
         }
 
-def create_hugin_service(temp_dir: Optional[str] = None, canvas_size: Tuple[int, int] = (6144, 3072)) -> HuginPipelineService:
+def create_hugin_service(temp_dir: Optional[str] = None, canvas_size: Tuple[int, int] = (8192, 4096)) -> HuginPipelineService:
     """Factory function to create Hugin pipeline service."""
     return HuginPipelineService(temp_dir=temp_dir, canvas_size=canvas_size)

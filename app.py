@@ -459,7 +459,7 @@ class MicroservicesPanoramaProcessor:
         
         # Initialize all microservices
         self.coordinate_service = create_coordinate_service()
-        self.hugin_service = create_hugin_service(canvas_size=self.canvas_size)
+        self.hugin_service = create_hugin_service()  # Let Hugin calculate optimal canvas size
         self.quality_service = create_quality_service()
         self.blending_service = create_blending_service()
         
