@@ -487,7 +487,21 @@ class HuginPipelineService:
             raise HuginPipelineError(f"Control point cleaning failed: {e}")
             
     def _step_3_5_detect_lines(self, project_file: str, progress_callback: Optional[Callable]) -> str:
-        """Step 3.5: Detect vertical/horizontal lines."""
+        """Step 3.5: Detect vertical/horizontal lines (skip for ARKit mode)."""
+        
+        if self.arkit_mode:
+            step = HuginStep("linefind", "Skipped - ARKit provides superior geometric accuracy")
+            step.start()
+            step.complete(success=True, output_files=[project_file])
+            self.pipeline_steps.append(step)
+            
+            if progress_callback:
+                progress_callback(0.5, "Preserving ARKit geometric accuracy...")
+                
+            logger.info("⚠️ Skipping linefind - ARKit positioning provides superior geometric constraints")
+            return project_file
+        
+        # Original linefind logic for non-ARKit mode
         step = HuginStep("linefind", "Detect horizon and vertical lines")
         step.start()
         self.pipeline_steps.append(step)
