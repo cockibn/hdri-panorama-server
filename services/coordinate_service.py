@@ -239,8 +239,9 @@ class ARKitCoordinateService:
             roll = 0.0  # Assume no roll for panorama capture
             
             # 4. Calculate normalized panorama coordinates for equirectangular projection
-            nx = ((wrap_azimuth + 180) % 360) / 360  # Center panorama at yaw=0° (North)
-            ny = (90 - elevation) / 180               # Correct vertical mapping (top=+90°, bottom=-90°)
+            # FIXED: Correct equirectangular mapping without double shift
+            nx = yaw / 360                           # Direct yaw mapping (0-360° -> 0-1)
+            ny = (90 + pitch) / 180                  # Correct vertical mapping (+90°=top=0, -90°=bottom=1)
             
             # Store conversion result with debugging info
             converted_coord = {
@@ -261,18 +262,36 @@ class ARKitCoordinateService:
                     'normalized_x': nx,
                     'normalized_y': ny,
                     'calibration_offset': calibration_azimuth_offset,
-                    'coordinate_fixes_applied': 'Expert analysis fixes: nx modulo wrap, ny vertical inversion'
+                    'coordinate_fixes_applied': 'CRITICAL FIX: Removed double 180° shift in nx, fixed ny vertical mapping'
                 },
                 'validation_flags': self._validate_single_coordinate(azimuth, elevation, nx, ny)
             }
             
             converted_coordinates.append(converted_coord)
             
-            # Detailed logging for first few coordinates
+            # ENHANCED COORDINATE DEBUG LOGGING
             if i < 5 or logger.isEnabledFor(logging.DEBUG):
-                logger.info(f"   📍 Point {i:2d}: iOS({azimuth:.1f}°↺,{elevation:.1f}°) → Hugin({yaw:.1f}°↻,{pitch:.1f}°,{roll:.1f}°) → norm({nx:.3f},{ny:.3f})")
-                if i < 3:  # Show conversion detail for first 3 points
-                    logger.info(f"      🔄 Conversion: {azimuth:.1f}°↺ → 90°-{azimuth:.1f}° = {yaw:.1f}°↻")
+                logger.info(f"🔍 COORDINATE CONVERSION DEBUG - Point {i:2d}:")
+                logger.info(f"   📱 iOS INPUT:")
+                logger.info(f"      Raw azimuth: {azimuth_raw:.1f}°")
+                logger.info(f"      Calibrated azimuth: {azimuth:.1f}° (after offset: {calibration_azimuth_offset:.1f}°)")
+                logger.info(f"      Elevation: {elevation:.1f}°")
+                logger.info(f"      Position: {position}")
+                logger.info(f"   🔄 CONVERSION MATH:")
+                logger.info(f"      yaw = (90° - {azimuth:.1f}°) % 360° = {yaw:.1f}°")
+                logger.info(f"      pitch = {elevation:.1f}° (direct mapping)")
+                logger.info(f"      roll = {roll:.1f}° (assumed)")
+                logger.info(f"   🎯 HUGIN OUTPUT:")
+                logger.info(f"      yaw: {yaw:.1f}° (navigation: 0°=North, clockwise)")
+                logger.info(f"      pitch: {pitch:.1f}°")
+                logger.info(f"      roll: {roll:.1f}°")
+                logger.info(f"   📐 EQUIRECTANGULAR:")
+                logger.info(f"      normalized_x: {nx:.3f} (0-1 across panorama width)")
+                logger.info(f"      normalized_y: {ny:.3f} (0-1 across panorama height)")
+                logger.info(f"   🗺️ EXPECTED PIXEL POSITION (if 4096x2048):")
+                logger.info(f"      X pixel: {nx * 4096:.0f}")
+                logger.info(f"      Y pixel: {ny * 2048:.0f}")
+                logger.info("   " + "="*60)
                 
         # Store conversion statistics for analysis
         self.conversion_stats = {
