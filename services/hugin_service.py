@@ -277,8 +277,8 @@ class HuginPipelineService:
         logger.info(f"🔍 DEBUG: Processing {len(converted_coordinates)} coordinate mappings")
         
         # iPhone ultra-wide lens parameters (corrected based on expert analysis)
-        # iPhone 11 Pro and newer: ~120° actual FOV measured
-        iphone_ultrawide_fov = 120.0  # Horizontal FOV in degrees (iPhone 11+ ultra-wide)
+        # iPhone 13/14/15 Pro Max: ~120° | iPhone 11/12 Pro: ~106.2°
+        iphone_ultrawide_fov = 106.2  # Conservative FOV for better compatibility across iPhone models
         iphone_projection = 0  # Rectilinear projection (f0 in PTO) - CRITICAL FIX
         
         with open(project_file, 'w') as f:
@@ -305,20 +305,35 @@ class HuginPipelineService:
                     raise HuginPipelineError(f"Failed to read image dimensions: {e}")  # Propagate error
                 
                 # Write image line with rectilinear projection, accurate FOV, and distortion correction
-                # iPhone ultra-wide lens distortion parameters (typical values for barrel distortion)
-                barrel_a = -0.05   # Barrel distortion coefficient (negative for barrel, positive for pincushion)
-                barrel_b = 0.01    # Secondary distortion coefficient
-                barrel_c = 0.001   # Tertiary distortion coefficient
+                # iPhone ultra-wide lens distortion parameters (calibrated for iPhone ultra-wide)
+                barrel_a = -0.08   # Strong barrel distortion for iPhone ultra-wide
+                barrel_b = 0.015   # Secondary correction coefficient
+                barrel_c = -0.002  # Fine-tuning coefficient
                 
-                f.write(f'i w{actual_width} h{actual_height} f{iphone_projection} v{iphone_ultrawide_fov:.1f} '
-                       f'Ra0 Rb0 Rc0 Rd0 Re0 Ef0 Er1 Eb1 '
-                       f'r{roll:.6f} p{pitch:.6f} y{yaw:.6f} '
-                       f'TrX0 TrY0 TrZ0 Tpy0 Tpp0 '
-                       f'j0 a{barrel_a} b{barrel_b} c{barrel_c} '  # FIXED: Add distortion correction
-                       f'd0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0 '
-                       f'n"{os.path.abspath(image_path)}"\n')
-                       
-                logger.debug(f"   📍 Image {i:2d}: y={yaw:.1f}°, p={pitch:.1f}°, r={roll:.1f}°")
+                pto_line = (f'i w{actual_width} h{actual_height} f{iphone_projection} v{iphone_ultrawide_fov:.1f} '
+                           f'Ra0 Rb0 Rc0 Rd0 Re0 Ef0 Er1 Eb1 '
+                           f'r{roll:.6f} p{pitch:.6f} y{yaw:.6f} '
+                           f'TrX0 TrY0 TrZ0 Tpy0 Tpp0 '
+                           f'j0 a{barrel_a} b{barrel_b} c{barrel_c} '  # FIXED: Add distortion correction
+                           f'd0 e0 g0 t0 Va1 Vb0 Vc0 Vd0 Vx0 Vy0 '
+                           f'n"{os.path.abspath(image_path)}"\n')
+                
+                f.write(pto_line)
+                
+                # ENHANCED PTO DEBUG LOGGING
+                logger.info(f"📝 HUGIN PTO DEBUG - Image {i:2d}:")
+                logger.info(f"   📁 File: {os.path.basename(image_path)}")
+                logger.info(f"   🖼️ Dimensions: {actual_width}x{actual_height}")
+                logger.info(f"   🎯 POSITIONING:")
+                logger.info(f"      yaw (y): {yaw:.6f}° (azimuth in Hugin coordinate system)")
+                logger.info(f"      pitch (p): {pitch:.6f}° (elevation)")
+                logger.info(f"      roll (r): {roll:.6f}° (camera rotation)")
+                logger.info(f"   🔧 LENS:")
+                logger.info(f"      projection (f): {iphone_projection} (rectilinear)")
+                logger.info(f"      FOV (v): {iphone_ultrawide_fov:.1f}° (iPhone ultra-wide)")
+                logger.info(f"      distortion (a,b,c): {barrel_a}, {barrel_b}, {barrel_c}")
+                logger.info(f"   💾 PTO line: {pto_line.strip()}")
+                logger.info("   " + "-"*50)
             
             # Add optimization variables (for lens/FOV only, to keep positions fixed)
             f.write("\n# Optimization variables (lens distortion and FOV, shared across images)\n")
@@ -396,7 +411,7 @@ class HuginPipelineService:
             logger.info(f"✅ Found {self.control_points_found} control points")
             
             # Enhanced geocpset fallback - trigger earlier for ultra-wide challenges
-            if self.control_points_found < 150:  # Increased threshold for ultra-wide reliability
+            if self.control_points_found < 300:  # Higher threshold for seamless blending
                 logger.warning(f"⚠️ Low control points ({self.control_points_found}) - attempting geocpset rescue")
                 cp_project = self._fix_connectivity_with_geocpset(cp_project)
             
@@ -541,12 +556,13 @@ class HuginPipelineService:
                 # ARKit mode: Photometric + lens optimization for ultra-wide distortion - CRITICAL FIX
                 cmd = [
                     "autooptimiser",
-                    "-m",  # Photometric optimization
+                    "-m",  # Photometric optimization (exposure, white balance, vignetting)
                     "-l",  # Lens optimization for ultra-wide distortion
+                    "-s",  # Include sky/horizon optimization for better blending
                     "-o", opt_project,
                     project_file
                 ]
-                logger.info("📋 Using ARKit photometric + lens optimization for ultra-wide distortion")
+                logger.info("📋 Using ARKit photometric + lens + sky optimization for seamless blending")
             else:
                 # Full optimization for non-ARKit data
                 cmd = [
