@@ -218,15 +218,14 @@ class ARKitCoordinateService:
             azimuth = max(0, min(360, azimuth))
             elevation = max(-90, min(90, elevation))
             
-            # CRITICAL COORDINATE CONVERSION - FIXED
+            # CRITICAL COORDINATE CONVERSION
             # iOS ARKit → Hugin coordinate system transformation
             
             # 1. Azimuth conversion (horizontal rotation)
-            # ANALYSIS: iOS app already provides proper spherical coordinates
-            # iOS: 0° = East, 90° = North, 180° = West, 270° = South (standard azimuth)
-            # Hugin: Expects azimuth in degrees for equirectangular mapping
-            # FIXED: Use direct mapping - iOS coordinates are already correct
-            yaw = azimuth  # Direct mapping - iOS app provides correct azimuth values
+            # iOS: 0° = East (+X axis), increases counter-clockwise (mathematical convention)
+            # Hugin: 0° = North, increases clockwise (navigation convention)
+            # CONVERSION: Rotate coordinate system and reverse direction
+            yaw = (90 - azimuth) % 360  # Convert from counter-clockwise-from-East to clockwise-from-North
             wrap_azimuth = yaw
             
             # 2. Elevation conversion (vertical rotation)  
