@@ -96,8 +96,6 @@ def create_enhanced_bundle_with_metadata(original_bundle_data: bytes, session_me
     ORIGINAL_IMAGES:
     {original_image_data...}
     """
-    import json
-    
     logger.info("📊 Creating enhanced bundle with session metadata...")
     
     # Extract session positioning data
@@ -274,7 +272,6 @@ def extract_bundle_images(bundle_file, upload_dir):
         # Save EXIF data for processing
         exif_file = upload_dir / "original_exif.json"
         try:
-            import json
             import base64
             
             # Convert EXIF data to JSON-serializable format
@@ -949,7 +946,6 @@ def process_panorama():
     # Create enhanced bundle with session positioning data for debugging
     enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
     try:
-        import json
         create_enhanced_bundle_with_metadata(
             original_bundle_data=bundle_data,
             session_metadata=session_metadata,
