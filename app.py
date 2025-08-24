@@ -695,6 +695,7 @@ class MicroservicesPanoramaProcessor:
             logger.info(f"🎉 Panorama ready for job: {job_id}")
             logger.info(f"📖 Preview URL: {preview_url}")
             logger.info(f"⬇️ Download URL: {download_url}")
+            logger.info(f"🔍 Debug Analysis: hdri-panorama-server-production.up.railway.app/v1/panorama/debug-preview/{job_id}")
             logger.info(f"🔗 Direct links ready for iOS app download")
             
             # Generate comprehensive service bus report
@@ -1050,6 +1051,7 @@ def view_debug_overlay(job_id: str):
         <p>Available debug visualizations:</p>
         <ul>
         <li><a href="/v1/panorama/debug/{job_id}">Coordinate Debug (grid + dots)</a></li>
+        <li><a href="/v1/panorama/debug-preview/{job_id}">Debug Overlay Preview</a></li>
         <li><a href="/v1/panorama/preview/{job_id}">Panorama Preview</a></li>
         </ul>
         </body>
@@ -1059,6 +1061,227 @@ def view_debug_overlay(job_id: str):
     file_size = os.path.getsize(overlay_path) / (1024 * 1024)
     logger.info(f"🎨 Serving debug overlay for job {job_id} - file size: {file_size:.1f}MB")
     return send_file(overlay_path, mimetype='image/jpeg')
+
+@app.route('/v1/panorama/debug-preview/<job_id>', methods=['GET'])
+def debug_overlay_preview(job_id: str):
+    """View debug overlay as an HTML preview with analysis information"""
+    # SECURITY: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        abort(400)
+    
+    with job_lock:
+        job = jobs.get(job_id)
+    if not job:
+        abort(404)
+    
+    # Look for debug overlay image
+    overlay_path = f"/tmp/debug_overlay_{job_id}.jpg"
+    coordinate_debug_path = f"/tmp/coordinate_debug_{job_id}.png"
+    
+    # Get quality score and status
+    quality_score = job.get('quality_score', 'Unknown')
+    job_state = job.get('state', 'Unknown')
+    processing_info = job.get('processing_info', {})
+    
+    # Create HTML preview with embedded image and analysis
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Debug Analysis - Job {job_id}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{ 
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                margin: 0; 
+                padding: 20px; 
+                background: #1a1a1a; 
+                color: #fff;
+                line-height: 1.6;
+            }}
+            .container {{ 
+                max-width: 1200px; 
+                margin: 0 auto; 
+                background: #2a2a2a; 
+                border-radius: 12px; 
+                padding: 30px; 
+                box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            }}
+            .header {{ 
+                text-align: center; 
+                margin-bottom: 30px; 
+                border-bottom: 2px solid #444; 
+                padding-bottom: 20px;
+            }}
+            .status-card {{ 
+                background: #333; 
+                border-radius: 8px; 
+                padding: 20px; 
+                margin: 20px 0;
+                border-left: 4px solid {"#e74c3c" if quality_score != "Unknown" and float(str(quality_score).split("/")[0]) < 50 else "#27ae60"};
+            }}
+            .grid {{ 
+                display: grid; 
+                grid-template-columns: 1fr 1fr; 
+                gap: 20px; 
+                margin: 20px 0;
+            }}
+            .image-container {{ 
+                text-align: center; 
+                background: #333; 
+                border-radius: 8px; 
+                padding: 20px;
+                overflow: hidden;
+            }}
+            .debug-image {{ 
+                max-width: 100%; 
+                height: auto; 
+                border-radius: 8px; 
+                box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+                transition: transform 0.3s ease;
+            }}
+            .debug-image:hover {{ 
+                transform: scale(1.05); 
+                cursor: pointer;
+            }}
+            .info-grid {{ 
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+                gap: 15px;
+                margin: 20px 0;
+            }}
+            .info-item {{ 
+                background: #333; 
+                padding: 15px; 
+                border-radius: 8px; 
+                text-align: center;
+            }}
+            .quality-score {{ 
+                font-size: 2em; 
+                font-weight: bold; 
+                color: {"#e74c3c" if quality_score != "Unknown" and float(str(quality_score).split("/")[0]) < 50 else "#27ae60"};
+            }}
+            .links {{ 
+                margin-top: 30px; 
+                text-align: center;
+            }}
+            .links a {{ 
+                display: inline-block; 
+                margin: 10px; 
+                padding: 12px 24px; 
+                background: #007acc; 
+                color: white; 
+                text-decoration: none; 
+                border-radius: 6px; 
+                transition: background 0.3s;
+            }}
+            .links a:hover {{ 
+                background: #005fa3; 
+            }}
+            .timestamp {{ 
+                color: #888; 
+                font-size: 0.9em;
+            }}
+            @media (max-width: 768px) {{ 
+                .grid {{ 
+                    grid-template-columns: 1fr; 
+                }}
+                .info-grid {{
+                    grid-template-columns: 1fr 1fr;
+                }}
+                .container {{ 
+                    padding: 15px; 
+                    margin: 10px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🔍 Panorama Debug Analysis</h1>
+                <div class="timestamp">Job ID: {job_id} • Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}</div>
+            </div>
+            
+            <div class="status-card">
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="quality-score">{quality_score}</div>
+                        <div>Quality Score</div>
+                    </div>
+                    <div class="info-item">
+                        <div style="font-size: 1.5em; color: #f39c12;">{job_state}</div>
+                        <div>Status</div>
+                    </div>
+                    <div class="info-item">
+                        <div style="font-size: 1.5em; color: #3498db;">{processing_info.get('arkit_mode', 'N/A')}</div>
+                        <div>ARKit Mode</div>
+                    </div>
+                    <div class="info-item">
+                        <div style="font-size: 1.5em; color: #9b59b6;">{processing_info.get('control_points_found', 'N/A')}</div>
+                        <div>Control Points</div>
+                    </div>
+                </div>
+            </div>
+    """
+    
+    # Add debug images if they exist
+    if os.path.exists(overlay_path) or os.path.exists(coordinate_debug_path):
+        html_content += '<div class="grid">'
+        
+        if os.path.exists(overlay_path):
+            overlay_size = os.path.getsize(overlay_path) / (1024 * 1024)
+            html_content += f"""
+            <div class="image-container">
+                <h3>🎨 Debug Overlay ({overlay_size:.1f}MB)</h3>
+                <p>Coordinate positioning vs panorama result</p>
+                <img src="/v1/panorama/overlay/{job_id}" class="debug-image" 
+                     onclick="window.open('/v1/panorama/overlay/{job_id}', '_blank')"
+                     alt="Debug overlay showing coordinate accuracy">
+            </div>
+            """
+        
+        if os.path.exists(coordinate_debug_path):
+            coord_size = os.path.getsize(coordinate_debug_path) / (1024 * 1024)
+            html_content += f"""
+            <div class="image-container">
+                <h3>📍 Coordinate Debug ({coord_size:.1f}MB)</h3>
+                <p>ARKit positioning visualization</p>
+                <img src="/v1/panorama/debug/{job_id}" class="debug-image"
+                     onclick="window.open('/v1/panorama/debug/{job_id}', '_blank')"
+                     alt="Coordinate debug showing ARKit positions">
+            </div>
+            """
+        
+        html_content += '</div>'
+    else:
+        html_content += f"""
+        <div class="status-card">
+            <h3>⚠️ Debug Images Not Available</h3>
+            <p>Debug visualizations may not have been generated yet or have expired.</p>
+            <p>Debug images are automatically created during processing and show:</p>
+            <ul>
+                <li><strong>Debug Overlay:</strong> Coordinate positioning accuracy vs final result</li>
+                <li><strong>Coordinate Debug:</strong> ARKit positioning visualization</li>
+            </ul>
+        </div>
+        """
+    
+    # Add navigation links
+    html_content += f"""
+            <div class="links">
+                <a href="/v1/panorama/preview/{job_id}">📸 View Panorama</a>
+                <a href="/v1/panorama/result/{job_id}">⬇️ Download Result</a>
+                <a href="/v1/panorama/status/{job_id}">📊 Status API</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    logger.info(f"🎨 Serving debug preview page for job {job_id}")
+    return html_content, 200, {'Content-Type': 'text/html'}
 
 @app.route('/health', methods=['GET'])
 def health_check():
