@@ -696,6 +696,7 @@ class MicroservicesPanoramaProcessor:
             logger.info(f"📖 Preview URL: {preview_url}")
             logger.info(f"⬇️ Download URL: {download_url}")
             logger.info(f"🔍 Debug Analysis: hdri-panorama-server-production.up.railway.app/v1/panorama/debug-preview/{job_id}")
+            logger.info(f"📦 Original Bundle: hdri-panorama-server-production.up.railway.app/v1/panorama/original/{job_id}")
             logger.info(f"🔗 Direct links ready for iOS app download")
             
             # Generate comprehensive service bus report
@@ -878,9 +879,17 @@ def process_panorama():
     upload_dir.mkdir()
     
     bundle_file = request.files['images_zip']
-    logger.info(f"Bundle file size: {len(bundle_file.read())} bytes")
-    bundle_file.seek(0)  # Reset file pointer
+    bundle_data = bundle_file.read()
+    logger.info(f"Bundle file size: {len(bundle_data)} bytes")
     
+    # Save the original bundle file for download/debugging
+    original_bundle_path = upload_dir / 'original_bundle.zip'
+    with open(original_bundle_path, 'wb') as f:
+        f.write(bundle_data)
+    logger.info(f"💾 Saved original bundle: {original_bundle_path}")
+    
+    # Reset file pointer for extraction
+    bundle_file.seek(0)
     image_files = extract_bundle_images(bundle_file, upload_dir)
     logger.info(f"Extracted {len(image_files)} images from bundle")
     
@@ -1053,6 +1062,7 @@ def view_debug_overlay(job_id: str):
         <li><a href="/v1/panorama/debug/{job_id}">Coordinate Debug (grid + dots)</a></li>
         <li><a href="/v1/panorama/debug-preview/{job_id}">Debug Overlay Preview</a></li>
         <li><a href="/v1/panorama/preview/{job_id}">Panorama Preview</a></li>
+        <li><a href="/v1/panorama/original/{job_id}">Download Original Bundle</a></li>
         </ul>
         </body>
         </html>
@@ -1273,6 +1283,7 @@ def debug_overlay_preview(job_id: str):
             <div class="links">
                 <a href="/v1/panorama/preview/{job_id}">📸 View Panorama</a>
                 <a href="/v1/panorama/result/{job_id}">⬇️ Download Result</a>
+                <a href="/v1/panorama/original/{job_id}">📦 Download Original</a>
                 <a href="/v1/panorama/status/{job_id}">📊 Status API</a>
             </div>
         </div>
@@ -1282,6 +1293,57 @@ def debug_overlay_preview(job_id: str):
     
     logger.info(f"🎨 Serving debug preview page for job {job_id}")
     return html_content, 200, {'Content-Type': 'text/html'}
+
+@app.route('/v1/panorama/original/<job_id>', methods=['GET'])
+def download_original_bundle(job_id: str):
+    """Download the original bundle file uploaded from the iOS app"""
+    # SECURITY: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        abort(400)
+    
+    with job_lock:
+        job = jobs.get(job_id)
+    if not job:
+        abort(404)
+    
+    # Look for the original bundle file
+    upload_dir = UPLOAD_DIR / job_id
+    original_bundle_path = upload_dir / 'original_bundle.zip'
+    
+    if not original_bundle_path.exists():
+        return jsonify({
+            "error": "Original bundle not found",
+            "message": f"The original bundle file for job {job_id} is not available. This may occur if the job is very old or if there was an issue during upload.",
+            "job_id": job_id
+        }), 404
+    
+    # Check file size and log download
+    file_size = original_bundle_path.stat().st_size
+    file_size_mb = file_size / (1024 * 1024)
+    
+    logger.info(f"📦 Serving original bundle for job {job_id} - file size: {file_size_mb:.1f}MB")
+    
+    # Generate a descriptive filename with timestamp
+    job_timestamp = job.get('created_at', 'unknown')
+    if isinstance(job_timestamp, str):
+        try:
+            from datetime import datetime
+            parsed_time = datetime.fromisoformat(job_timestamp.replace('Z', '+00:00'))
+            timestamp_str = parsed_time.strftime('%Y%m%d_%H%M%S')
+        except:
+            timestamp_str = 'unknown'
+    else:
+        timestamp_str = 'unknown'
+    
+    descriptive_filename = f"hdri360_original_{timestamp_str}_{job_id[:8]}.zip"
+    
+    return send_file(
+        original_bundle_path, 
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=descriptive_filename
+    )
 
 @app.route('/health', methods=['GET'])
 def health_check():
