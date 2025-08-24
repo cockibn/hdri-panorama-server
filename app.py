@@ -84,6 +84,64 @@ def validate_bundle_format(bundle_data):
     
     return True
 
+def create_enhanced_bundle_with_metadata(original_bundle_data: bytes, session_metadata: dict, output_path):
+    """
+    Create an enhanced bundle that includes both the original image data and session positioning metadata.
+    
+    Enhanced Format:
+    HDRI_BUNDLE_V2_WITH_METADATA
+    {image_count}
+    SESSION_METADATA:{json_length}
+    {session_json_data}
+    ORIGINAL_IMAGES:
+    {original_image_data...}
+    """
+    import json
+    
+    logger.info("📊 Creating enhanced bundle with session metadata...")
+    
+    # Extract session positioning data
+    session_json = json.dumps({
+        "bundleVersion": "HDRI_BUNDLE_V2_WITH_METADATA",
+        "sessionData": session_metadata,
+        "enhancedAt": datetime.now(timezone.utc).isoformat(),
+        "format": {
+            "description": "Enhanced HDRI bundle with positioning metadata for debugging",
+            "originalFormat": "HDRI_BUNDLE_V1", 
+            "imageCount": session_metadata.get("totalPoints", 0),
+            "capturePoints": session_metadata.get("capturePoints", [])
+        }
+    }, indent=2)
+    
+    session_json_bytes = session_json.encode('utf-8')
+    
+    # Create enhanced bundle
+    with open(output_path, 'wb') as f:
+        # New header format
+        f.write(b'HDRI_BUNDLE_V2_WITH_METADATA\n')
+        
+        # Image count (from session metadata)
+        image_count = session_metadata.get("totalPoints", 0)
+        f.write(f'{image_count}\n'.encode('utf-8'))
+        
+        # Session metadata section  
+        f.write(f'SESSION_METADATA:{len(session_json_bytes)}\n'.encode('utf-8'))
+        f.write(session_json_bytes)
+        f.write(b'\n')
+        
+        # Original bundle data (images)
+        # Skip the original header and just include the image data
+        original_header_end = original_bundle_data.find(b'\xff\xd8')  # First JPEG marker
+        if original_header_end > 0:
+            f.write(b'ORIGINAL_IMAGES:\n')
+            f.write(original_bundle_data[original_header_end:])  # All image data
+        else:
+            f.write(b'ORIGINAL_BUNDLE:\n')
+            f.write(original_bundle_data)  # Include full original if can't parse
+    
+    file_size = output_path.stat().st_size
+    logger.info(f"📦 Enhanced bundle created: {file_size / 1024 / 1024:.1f}MB with positioning metadata")
+
 def validate_image_index(index_str):
     """Validate image index to prevent path traversal."""
     try:
@@ -888,6 +946,20 @@ def process_panorama():
         f.write(bundle_data)
     logger.info(f"💾 Saved original bundle: {original_bundle_path}")
     
+    # Create enhanced bundle with session positioning data for debugging
+    enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
+    try:
+        import json
+        create_enhanced_bundle_with_metadata(
+            original_bundle_data=bundle_data,
+            session_metadata=session_metadata,
+            output_path=enhanced_bundle_path
+        )
+        logger.info(f"📊 Created enhanced bundle with positioning data: {enhanced_bundle_path}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not create enhanced bundle: {e}")
+        # Fall back to original bundle only
+    
     # Reset file pointer for extraction
     bundle_file.seek(0)
     image_files = extract_bundle_images(bundle_file, upload_dir)
@@ -1307,22 +1379,32 @@ def download_original_bundle(job_id: str):
     if not job:
         abort(404)
     
-    # Look for the original bundle file
+    # Look for enhanced bundle first (with metadata), fallback to original
     upload_dir = UPLOAD_DIR / job_id
+    enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
     original_bundle_path = upload_dir / 'original_bundle.zip'
     
-    if not original_bundle_path.exists():
+    # Prioritize enhanced bundle with positioning metadata for debugging
+    if enhanced_bundle_path.exists():
+        bundle_path = enhanced_bundle_path
+        bundle_type = "enhanced"
+        logger.info(f"📊 Serving enhanced bundle with session positioning data for job {job_id}")
+    elif original_bundle_path.exists():
+        bundle_path = original_bundle_path
+        bundle_type = "original"
+        logger.info(f"📦 Serving original bundle (no metadata) for job {job_id}")
+    else:
         return jsonify({
-            "error": "Original bundle not found",
-            "message": f"The original bundle file for job {job_id} is not available. This may occur if the job is very old or if there was an issue during upload.",
+            "error": "Bundle not found",
+            "message": f"No bundle files found for job {job_id}. This may occur if the job is very old or if there was an issue during upload.",
             "job_id": job_id
         }), 404
     
     # Check file size and log download
-    file_size = original_bundle_path.stat().st_size
+    file_size = bundle_path.stat().st_size
     file_size_mb = file_size / (1024 * 1024)
     
-    logger.info(f"📦 Serving original bundle for job {job_id} - file size: {file_size_mb:.1f}MB")
+    logger.info(f"📦 Serving {bundle_type} bundle for job {job_id} - file size: {file_size_mb:.1f}MB")
     
     # Generate a descriptive filename with timestamp
     job_timestamp = job.get('created_at', 'unknown')
@@ -1336,10 +1418,12 @@ def download_original_bundle(job_id: str):
     else:
         timestamp_str = 'unknown'
     
-    descriptive_filename = f"hdri360_original_{timestamp_str}_{job_id[:8]}.zip"
+    # Include bundle type in filename for clarity
+    bundle_suffix = "_with_metadata" if bundle_type == "enhanced" else ""
+    descriptive_filename = f"hdri360_original{bundle_suffix}_{timestamp_str}_{job_id[:8]}.zip"
     
     return send_file(
-        original_bundle_path, 
+        bundle_path, 
         mimetype='application/zip',
         as_attachment=True,
         download_name=descriptive_filename
