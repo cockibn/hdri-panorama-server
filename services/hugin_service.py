@@ -295,22 +295,28 @@ class HuginPipelineService:
                 pitch = hugin_output['pitch']
                 roll = hugin_output['roll']
                 
-                # Get actual image dimensions instead of hard-coding
+                # Get actual image dimensions and extract EXIF lens data
                 try:
                     from PIL import Image
+                    from PIL.ExifTags import TAGS, GPSTAGS
+                    
                     with Image.open(image_path) as img:
                         actual_width, actual_height = img.size
+                        
+                        # Extract EXIF lens parameters for accurate distortion correction
+                        lens_params = self._extract_lens_parameters_from_exif(img, i)
+                        
                 except Exception as e:
-                    logger.error(f"❌ Could not get dimensions for {image_path}: {e}")
+                    logger.error(f"❌ Could not read image {image_path}: {e}")
                     raise HuginPipelineError(f"Failed to read image dimensions: {e}")  # Propagate error
                 
-                # Write image line with rectilinear projection, accurate FOV, and distortion correction
-                # iPhone ultra-wide lens distortion parameters (calibrated for iPhone ultra-wide)
-                barrel_a = -0.08   # Strong barrel distortion for iPhone ultra-wide
-                barrel_b = 0.015   # Secondary correction coefficient
-                barrel_c = -0.002  # Fine-tuning coefficient
+                # Use extracted EXIF lens parameters or fallback to defaults
+                actual_fov = lens_params.get('fov', iphone_ultrawide_fov)
+                barrel_a = lens_params.get('distortion_a', -0.08)
+                barrel_b = lens_params.get('distortion_b', 0.015) 
+                barrel_c = lens_params.get('distortion_c', -0.002)
                 
-                pto_line = (f'i w{actual_width} h{actual_height} f{iphone_projection} v{iphone_ultrawide_fov:.1f} '
+                pto_line = (f'i w{actual_width} h{actual_height} f{iphone_projection} v{actual_fov:.1f} '
                            f'Ra0 Rb0 Rc0 Rd0 Re0 Ef0 Er1 Eb1 '
                            f'r{roll:.6f} p{pitch:.6f} y{yaw:.6f} '
                            f'TrX0 TrY0 TrZ0 Tpy0 Tpp0 '
@@ -320,7 +326,7 @@ class HuginPipelineService:
                 
                 f.write(pto_line)
                 
-                # ENHANCED PTO DEBUG LOGGING
+                # ENHANCED PTO DEBUG LOGGING WITH EXIF LENS DATA
                 logger.info(f"📝 HUGIN PTO DEBUG - Image {i:2d}:")
                 logger.info(f"   📁 File: {os.path.basename(image_path)}")
                 logger.info(f"   🖼️ Dimensions: {actual_width}x{actual_height}")
@@ -328,10 +334,14 @@ class HuginPipelineService:
                 logger.info(f"      yaw (y): {yaw:.6f}° (azimuth in Hugin coordinate system)")
                 logger.info(f"      pitch (p): {pitch:.6f}° (elevation)")
                 logger.info(f"      roll (r): {roll:.6f}° (camera rotation)")
-                logger.info(f"   🔧 LENS:")
+                logger.info(f"   🔧 LENS (EXIF-EXTRACTED):")
                 logger.info(f"      projection (f): {iphone_projection} (rectilinear)")
-                logger.info(f"      FOV (v): {iphone_ultrawide_fov:.1f}° (iPhone ultra-wide)")
-                logger.info(f"      distortion (a,b,c): {barrel_a}, {barrel_b}, {barrel_c}")
+                logger.info(f"      FOV (v): {actual_fov:.1f}° ({'EXIF-calculated' if 'fov' in lens_params else 'default'})")
+                logger.info(f"      distortion (a,b,c): {barrel_a:.3f}, {barrel_b:.3f}, {barrel_c:.3f} ({'EXIF-based' if lens_params else 'default'})")
+                if lens_params.get('focal_length_mm'):
+                    logger.info(f"      focal length: {lens_params['focal_length_mm']:.2f}mm (from EXIF)")
+                if lens_params.get('lens_model'):
+                    logger.info(f"      lens model: {lens_params['lens_model']} (from EXIF)")
                 logger.info(f"   💾 PTO line: {pto_line.strip()}")
                 logger.info("   " + "-"*50)
             
@@ -789,6 +799,101 @@ class HuginPipelineService:
         except Exception as e:
             logger.warning(f"⚠️ Image dimension validation failed: {e}")
 
+    def _extract_lens_parameters_from_exif(self, img, image_index: int) -> Dict[str, float]:
+        """Extract lens parameters from iPhone EXIF data for accurate distortion correction."""
+        try:
+            from PIL.ExifTags import TAGS
+            
+            exif_dict = img.getexif()
+            if not exif_dict:
+                logger.debug(f"📷 Image {image_index}: No EXIF data found")
+                return {}
+            
+            lens_params = {}
+            
+            # Extract key lens parameters from iPhone EXIF
+            for tag_id, value in exif_dict.items():
+                tag_name = TAGS.get(tag_id, tag_id)
+                
+                # iPhone focal length in mm (35mm equivalent)
+                if tag_name == "FocalLength":
+                    focal_length_mm = float(value)
+                    lens_params['focal_length_mm'] = focal_length_mm
+                    
+                    # Convert to FOV using sensor size
+                    # iPhone ultra-wide: ~3.04mm sensor width for ultra-wide
+                    # Standard formula: FOV = 2 * arctan(sensor_width / (2 * focal_length))
+                    if focal_length_mm < 2.0:  # Ultra-wide lens detection
+                        sensor_width_mm = 3.04  # iPhone ultra-wide sensor
+                        fov_rad = 2 * math.atan(sensor_width_mm / (2 * focal_length_mm))
+                        fov_deg = math.degrees(fov_rad)
+                        lens_params['fov'] = fov_deg
+                        
+                        # Ultra-wide specific distortion parameters based on focal length
+                        if focal_length_mm < 1.8:  # iPhone 11/12 Pro ultra-wide
+                            lens_params['distortion_a'] = -0.095
+                            lens_params['distortion_b'] = 0.018
+                            lens_params['distortion_c'] = -0.003
+                        else:  # iPhone 13+ Pro ultra-wide (slightly improved)
+                            lens_params['distortion_a'] = -0.075
+                            lens_params['distortion_b'] = 0.012
+                            lens_params['distortion_c'] = -0.002
+                            
+                        logger.info(f"📷 Image {image_index}: Ultra-wide lens detected")
+                        logger.info(f"   Focal length: {focal_length_mm:.2f}mm")
+                        logger.info(f"   Calculated FOV: {fov_deg:.1f}°")
+                        logger.info(f"   Distortion: a={lens_params['distortion_a']:.3f}")
+                        
+                    else:  # Standard wide lens
+                        # Calculate FOV for standard lens (different sensor size)
+                        sensor_width_mm = 4.80  # iPhone standard wide sensor
+                        fov_rad = 2 * math.atan(sensor_width_mm / (2 * focal_length_mm))
+                        fov_deg = math.degrees(fov_rad)
+                        lens_params['fov'] = fov_deg
+                        
+                        # Minimal distortion for standard lens
+                        lens_params['distortion_a'] = -0.02
+                        lens_params['distortion_b'] = 0.005
+                        lens_params['distortion_c'] = -0.001
+                        
+                        logger.info(f"📷 Image {image_index}: Standard lens detected")
+                        
+                # iPhone camera lens model/identifier
+                elif tag_name == "LensModel":
+                    lens_params['lens_model'] = str(value)
+                    logger.debug(f"📷 Image {image_index}: Lens model: {value}")
+                    
+                # Camera make/model for validation
+                elif tag_name == "Make":
+                    lens_params['camera_make'] = str(value)
+                elif tag_name == "Model":
+                    lens_params['camera_model'] = str(value)
+                    logger.debug(f"📷 Image {image_index}: Camera: {value}")
+            
+            # Validate that this is an iPhone with expected lens characteristics
+            camera_make = lens_params.get('camera_make', '').lower()
+            camera_model = lens_params.get('camera_model', '').lower()
+            
+            if 'apple' in camera_make or 'iphone' in camera_model:
+                logger.debug(f"✅ iPhone camera validated for image {image_index}")
+                
+                # Apply iPhone-specific lens corrections if focal length wasn't found
+                if 'fov' not in lens_params:
+                    # Default to ultra-wide assumption for panorama app
+                    lens_params['fov'] = 120.0  # iPhone ultra-wide default
+                    lens_params['distortion_a'] = -0.08
+                    lens_params['distortion_b'] = 0.015
+                    lens_params['distortion_c'] = -0.002
+                    logger.info(f"📷 Image {image_index}: Using iPhone ultra-wide defaults")
+            else:
+                logger.warning(f"⚠️ Image {image_index}: Non-iPhone camera detected - using generic parameters")
+                
+            return lens_params
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to extract EXIF lens data from image {image_index}: {e}")
+            return {}
+    
     def cleanup(self):
         """Clean up temporary files."""
         if os.path.exists(self.temp_dir):
