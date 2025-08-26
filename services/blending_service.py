@@ -196,18 +196,18 @@ class BlendingService:
             # Optimizations for 16-point iPhone capture pattern with 106.2° FOV:
             # - Conservative pyramid levels (10) to match image geometry
             # - Modern blend-colorspace instead of deprecated no-ciecam
-            # - Coarse mask for better overlap handling
-            # - Dijkstra seam finder for handling excessive overlap
+            # - Fine mask for highest quality (since overlap is pre-filtered)
+            # - Nearest feature transform seam generator (reliable for overlap)
             cmd = [
                 "enblend",
                 "-o", temp_tiff,
-                "--wrap=horizontal",           # Essential for 360° seamless wrapping
-                "--compression=lzw",           # Lossless compression
-                "--levels=10",                 # Conservative levels to match geometry
-                "--coarse-mask",               # Better for overlapping images
-                "--primary-seam-generator=dijkstra",  # Better overlap handling
-                "--blend-colorspace=identity", # Modern replacement for --no-ciecam
-                "--optimizer-weights=8:2"      # Favor distance over luminance
+                "--wrap=horizontal",                    # Essential for 360° seamless wrapping
+                "--compression=lzw",                    # Lossless compression
+                "--levels=10",                          # Conservative levels to match geometry
+                "--fine-mask",                          # High quality masks (overlap pre-filtered)
+                "--primary-seam-generator=nearest-feature-transform",  # Reliable seam detection
+                "--blend-colorspace=identity",          # Modern replacement for --no-ciecam
+                "--optimizer-weights=8:2"               # Favor distance over luminance
             ]
             
             # Add environment-configurable options for debugging
