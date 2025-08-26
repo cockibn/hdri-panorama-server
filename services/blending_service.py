@@ -175,23 +175,39 @@ class BlendingService:
             self.progress_callback(0.1, "Starting professional enblend blending...")
             
         try:
+            # Pre-validate images for excessive overlap
+            overlap_analysis = self._analyze_image_overlap(tiff_files)
+            if overlap_analysis['excessive_overlap_detected']:
+                logger.warning(f"⚠️ Pre-analysis detected excessive overlap: {overlap_analysis['overlap_percentage']:.1f}%")
+                logger.info("🔧 Applying overlap mitigation strategies...")
+                
+                # Try to reduce overlap by filtering out problematic images
+                filtered_files = self._filter_overlapping_images(tiff_files, overlap_analysis)
+                if len(filtered_files) >= 8:  # Minimum viable images for panorama
+                    logger.info(f"📉 Reduced images from {len(tiff_files)} to {len(filtered_files)} to avoid overlap")
+                    tiff_files = filtered_files
+                else:
+                    logger.warning("⚠️ Cannot filter images - would result in insufficient coverage")
+            
             # Create temporary TIFF output (enblend doesn't support EXR directly)
             temp_tiff = os.path.join(self.temp_dir, "enblend_output.tif")
             
             # Build optimized enblend command for iPhone ultra-wide panoramas
             # Optimizations for 16-point iPhone capture pattern with 106.2° FOV:
-            # - Manual pyramid levels for optimal quality/speed balance
-            # - RGB colorspace for better compatibility (CIELAB not always supported)
-            # - Fine masks for seamless ultra-wide image boundaries  
-            # - Optimized for photometric consistency over geometric precision
+            # - Conservative pyramid levels (10) to match image geometry
+            # - Modern blend-colorspace instead of deprecated no-ciecam
+            # - Coarse mask for better overlap handling
+            # - Dijkstra seam finder for handling excessive overlap
             cmd = [
                 "enblend",
                 "-o", temp_tiff,
-                "--wrap=horizontal",        # Essential for 360° seamless wrapping
-                "--compression=lzw",        # Lossless compression
-                "--levels=29",             # Max pyramid levels for best quality
-                "--fine-mask",             # Generate high-quality seam masks
-                "--no-ciecam"              # Skip complex color appearance model (faster)
+                "--wrap=horizontal",           # Essential for 360° seamless wrapping
+                "--compression=lzw",           # Lossless compression
+                "--levels=10",                 # Conservative levels to match geometry
+                "--coarse-mask",               # Better for overlapping images
+                "--primary-seam-generator=dijkstra",  # Better overlap handling
+                "--blend-colorspace=identity", # Modern replacement for --no-ciecam
+                "--optimizer-weights=8:2"      # Favor distance over luminance
             ]
             
             # Add environment-configurable options for debugging
@@ -680,6 +696,175 @@ class BlendingService:
             shutil.rmtree(self.temp_dir)
             logger.info(f"🧹 Cleaned up blending temporary directory")
             
+    def _analyze_image_overlap(self, tiff_files: List[str]) -> Dict[str, Any]:
+        """Analyze rendered TIFF files for excessive overlap that would cause enblend to fail."""
+        logger.info(f"🔍 Analyzing overlap patterns in {len(tiff_files)} rendered images...")
+        
+        try:
+            non_empty_regions = []
+            
+            # Analyze each TIFF file to find non-black regions
+            for i, tiff_file in enumerate(tiff_files):
+                if not os.path.exists(tiff_file):
+                    logger.warning(f"⚠️ TIFF file {i} not found: {tiff_file}")
+                    continue
+                    
+                # Read image and find non-black pixels
+                img = cv2.imread(tiff_file, cv2.IMREAD_COLOR)
+                if img is None:
+                    logger.warning(f"⚠️ Could not read TIFF file {i}: {tiff_file}")
+                    continue
+                
+                # Find non-black regions (rendered areas)
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                non_black = gray > 10  # Threshold for non-black pixels
+                
+                if np.any(non_black):
+                    # Find bounding box of non-black region
+                    coords = np.column_stack(np.where(non_black))
+                    if len(coords) > 0:
+                        min_row, min_col = coords.min(axis=0)
+                        max_row, max_col = coords.max(axis=0)
+                        
+                        region = {
+                            'file_index': i,
+                            'file_name': os.path.basename(tiff_file),
+                            'bbox': (min_row, min_col, max_row, max_col),
+                            'area': (max_row - min_row) * (max_col - min_col),
+                            'coverage': np.sum(non_black) / non_black.size
+                        }
+                        non_empty_regions.append(region)
+            
+            # Calculate overlap statistics
+            total_regions = len(non_empty_regions)
+            overlap_count = 0
+            max_overlap_percentage = 0.0
+            
+            # Check pairwise overlaps
+            for i in range(len(non_empty_regions)):
+                for j in range(i + 1, len(non_empty_regions)):
+                    region1 = non_empty_regions[i]
+                    region2 = non_empty_regions[j]
+                    
+                    # Calculate bounding box intersection
+                    r1_min_row, r1_min_col, r1_max_row, r1_max_col = region1['bbox']
+                    r2_min_row, r2_min_col, r2_max_row, r2_max_col = region2['bbox']
+                    
+                    # Check if bounding boxes overlap
+                    if (r1_min_row < r2_max_row and r2_min_row < r1_max_row and
+                        r1_min_col < r2_max_col and r2_min_col < r1_max_col):
+                        
+                        # Calculate intersection area
+                        int_min_row = max(r1_min_row, r2_min_row)
+                        int_min_col = max(r1_min_col, r2_min_col)
+                        int_max_row = min(r1_max_row, r2_max_row)
+                        int_max_col = min(r1_max_col, r2_max_col)
+                        
+                        intersection_area = (int_max_row - int_min_row) * (int_max_col - int_min_col)
+                        min_area = min(region1['area'], region2['area'])
+                        
+                        if min_area > 0:
+                            overlap_percentage = (intersection_area / min_area) * 100
+                            max_overlap_percentage = max(max_overlap_percentage, overlap_percentage)
+                            
+                            if overlap_percentage > 30:  # 30% overlap threshold
+                                overlap_count += 1
+            
+            excessive_overlap = max_overlap_percentage > 60 or overlap_count > total_regions * 0.4
+            
+            analysis_result = {
+                'total_images': len(tiff_files),
+                'renderable_images': total_regions,
+                'excessive_overlap_detected': excessive_overlap,
+                'overlap_percentage': max_overlap_percentage,
+                'overlapping_pairs': overlap_count,
+                'regions': non_empty_regions
+            }
+            
+            logger.info(f"📊 Overlap analysis: {total_regions} renderable images, max {max_overlap_percentage:.1f}% overlap")
+            
+            return analysis_result
+            
+        except Exception as e:
+            logger.error(f"❌ Overlap analysis failed: {e}")
+            return {
+                'total_images': len(tiff_files),
+                'excessive_overlap_detected': False,
+                'overlap_percentage': 0.0,
+                'error': str(e)
+            }
+
+    def _filter_overlapping_images(self, tiff_files: List[str], overlap_analysis: Dict[str, Any]) -> List[str]:
+        """Filter out images that cause excessive overlap while maintaining panorama coverage."""
+        regions = overlap_analysis.get('regions', [])
+        if not regions:
+            return tiff_files
+        
+        # Simple filtering strategy: keep every other image to reduce overlap
+        # This maintains reasonable coverage while reducing overlap
+        filtered_indices = []
+        
+        # Sort regions by coverage (keep higher coverage images)
+        sorted_regions = sorted(regions, key=lambda r: r['coverage'], reverse=True)
+        
+        # Select non-overlapping images using a greedy approach
+        selected_bboxes = []
+        
+        for region in sorted_regions:
+            bbox = region['bbox']
+            file_index = region['file_index']
+            
+            # Check if this region overlaps significantly with already selected ones
+            overlaps_existing = False
+            for selected_bbox in selected_bboxes:
+                if self._calculate_bbox_overlap(bbox, selected_bbox) > 40:  # 40% overlap threshold
+                    overlaps_existing = True
+                    break
+            
+            if not overlaps_existing:
+                filtered_indices.append(file_index)
+                selected_bboxes.append(bbox)
+        
+        # Ensure minimum coverage - if we filtered too much, add back some images
+        if len(filtered_indices) < 8:
+            # Add back highest coverage images until we reach minimum
+            for region in sorted_regions:
+                if len(filtered_indices) >= 8:
+                    break
+                if region['file_index'] not in filtered_indices:
+                    filtered_indices.append(region['file_index'])
+        
+        # Return filtered file list in original order
+        filtered_indices.sort()
+        filtered_files = [tiff_files[i] for i in filtered_indices if i < len(tiff_files)]
+        
+        logger.info(f"🔧 Filtered overlap: selected {len(filtered_files)} of {len(tiff_files)} images")
+        return filtered_files
+
+    def _calculate_bbox_overlap(self, bbox1: Tuple, bbox2: Tuple) -> float:
+        """Calculate overlap percentage between two bounding boxes."""
+        r1_min_row, r1_min_col, r1_max_row, r1_max_col = bbox1
+        r2_min_row, r2_min_col, r2_max_row, r2_max_col = bbox2
+        
+        # Calculate intersection
+        int_min_row = max(r1_min_row, r2_min_row)
+        int_min_col = max(r1_min_col, r2_min_col)
+        int_max_row = min(r1_max_row, r2_max_row)
+        int_max_col = min(r1_max_col, r2_max_col)
+        
+        if int_max_row <= int_min_row or int_max_col <= int_min_col:
+            return 0.0  # No intersection
+        
+        intersection_area = (int_max_row - int_min_row) * (int_max_col - int_min_col)
+        area1 = (r1_max_row - r1_min_row) * (r1_max_col - r1_min_col)
+        area2 = (r2_max_row - r2_min_row) * (r2_max_col - r2_min_col)
+        
+        min_area = min(area1, area2)
+        
+        if min_area > 0:
+            return (intersection_area / min_area) * 100
+        return 0.0
+
     def generate_debug_report(self) -> Dict[str, Any]:
         """Generate comprehensive debug report."""
         return {
