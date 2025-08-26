@@ -246,7 +246,9 @@ class HuginPipelineService:
                 self._generate_positioned_project(images, converted_coordinates, project_file)
             else:
                 # Basic project generation using native Hugin positioning
-                cmd = ["pto_gen", "-o", project_file] + images
+                # Convert to absolute paths since pto_gen runs from temp directory
+                absolute_images = [os.path.abspath(img) for img in images]
+                cmd = ["pto_gen", "-o", project_file] + absolute_images
                 self._run_command(cmd, "pto_gen")
                 
             step.complete(success=True, output_files=[project_file])
