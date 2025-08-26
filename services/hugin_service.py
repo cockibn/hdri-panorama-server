@@ -119,16 +119,19 @@ class HuginPipelineService:
         # Always validate image files first
         self._validate_input_images(images)
         
+        # Convert to absolute paths before changing directory
+        absolute_images = [os.path.abspath(img_path) for img_path in images]
+        
         # Change to temp directory for processing
         original_cwd = os.getcwd()
         os.chdir(self.temp_dir)
         
         try:
-            # Copy images to temp directory with absolute paths
+            # Copy images to temp directory using pre-resolved absolute paths
             local_images = []
-            for i, img_path in enumerate(images):
+            for i, abs_img_path in enumerate(absolute_images):
                 local_name = f'img{i+1:02d}.jpg'
-                shutil.copy2(img_path, local_name)
+                shutil.copy2(abs_img_path, local_name)
                 local_images.append(local_name)
                 
             if progress_callback:
