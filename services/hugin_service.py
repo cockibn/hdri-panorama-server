@@ -226,8 +226,9 @@ class HuginPipelineService:
             }
             
     def _step_1_generate_project(self, images: List[str], converted_coordinates: List[Dict], progress_callback: Optional[Callable]) -> str:
-        """Step 1: Generate project file with ARKit positioning data."""
-        step = HuginStep("pto_gen", "Generate project file with ARKit positioning")
+        """Step 1: Generate project file with native Hugin positioning."""
+        step_name = "Generate project file with native Hugin positioning" if not self.arkit_mode else "Generate project file with ARKit positioning"
+        step = HuginStep("pto_gen", step_name)
         step.start()
         self.pipeline_steps.append(step)
         
@@ -237,11 +238,14 @@ class HuginPipelineService:
         project_file = os.path.join(self.temp_dir, "project.pto")
         
         try:
+            # Always validate image files first
+            self._validate_input_images(images)
+            
             if self.arkit_mode:
                 # Generate positioned project with ARKit data
                 self._generate_positioned_project(images, converted_coordinates, project_file)
             else:
-                # Basic project generation
+                # Basic project generation using native Hugin positioning
                 cmd = ["pto_gen", "-o", project_file] + images
                 self._run_command(cmd, "pto_gen")
                 
@@ -798,6 +802,25 @@ class HuginPipelineService:
             
         except Exception as e:
             logger.warning(f"⚠️ Image dimension validation failed: {e}")
+
+    def _validate_input_images(self, images: List[str]):
+        """Validate that all input image files exist and are readable."""
+        logger.info(f"🔍 Validating {len(images)} input images...")
+        
+        for i, img_path in enumerate(images):
+            if not os.path.exists(img_path):
+                raise HuginPipelineError(f"Image {i} missing: {img_path}")
+                
+            try:
+                from PIL import Image
+                with Image.open(img_path) as img:
+                    width, height = img.size
+                    mode = img.mode
+                    logger.info(f"📸 Image {i}: {os.path.basename(img_path)} {width}×{height} ({mode})")
+            except Exception as e:
+                raise HuginPipelineError(f"Failed to read image {img_path}: {e}")
+                
+        logger.info("✅ All input images validated successfully")
 
     def _extract_lens_parameters_from_exif(self, img, image_index: int) -> Dict[str, float]:
         """Extract lens parameters from iPhone EXIF data for accurate distortion correction."""
