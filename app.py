@@ -38,8 +38,7 @@ logging.getLogger('services').setLevel(logging.INFO)
 
 # Import microservices
 from services import (
-    create_hugin_service, create_quality_service, create_blending_service,
-    get_service_bus, ServiceStatus
+    create_hugin_service
 )
 
 app = Flask(__name__)
@@ -508,254 +507,76 @@ class MicroservicesPanoramaProcessor:
         }
         self.canvas_size = resolution_mapping.get(self.resolution, (6144, 3072))
         
-        # Initialize service bus
-        self.service_bus = get_service_bus()
-        self.service_bus.enable_debug_mode(True)
+        # Initialize Hugin service for panorama stitching
+        self.hugin_service = create_hugin_service()
         
-        # Initialize all microservices
-        self.hugin_service = create_hugin_service()  # Let Hugin calculate optimal canvas size
-        self.quality_service = create_quality_service()
-        self.blending_service = create_blending_service()
-        
-        # Register all services with service bus
-        self._register_services()
-        
-        logger.info(f"🏗️ Microservices Panorama Processor initialized")
+        logger.info(f"🏗️ Simple Panorama Processor initialized")
         logger.info(f"   Resolution: {self.resolution} ({self.canvas_size[0]}×{self.canvas_size[1]})")
-        logger.info(f"   Services: hugin (native positioning), quality, blending")
+        logger.info(f"   Using proven Hugin 7-step workflow")
         
-    def _register_services(self):
-        """Register all services with the service bus."""
-        services = [
-            ("hugin_service", "1.0.0", ["pto_gen", "cpfind", "autooptimiser", "nona", "full_pipeline"]),
-            ("quality_service", "1.0.0", ["quality_analysis", "metrics_calculation", "issue_detection"]),
-            ("blending_service", "1.0.0", ["enblend", "opencv_blend", "emergency_fallback"])
-        ]
-        
-        for name, version, capabilities in services:
-            self.service_bus.register_service(name, version, capabilities)
-            
-        logger.info(f"📡 Registered {len(services)} services with service bus")
 
     def process_session(self, job_id: str, session_data: dict, image_files: List[str], base_url: str = None):
-        """Process panorama session using complete microservices pipeline."""
+        """Process panorama session using proven Hugin workflow."""
         try:
-            logger.info(f"🚀 Starting microservices panorama processing for job {job_id}")
-            self._update_job_status(job_id, JobState.PROCESSING, 0.0, "Initializing microservices pipeline...")
+            logger.info(f"🚀 Starting panorama processing for job {job_id}")
+            self._update_job_status(job_id, JobState.PROCESSING, 0.0, "Initializing Hugin panorama stitching...")
             
             start_time = time.time()
             capture_points = session_data.get('capturePoints', [])
-            logger.info(f"📊 Processing {len(capture_points)} capture points with native Hugin positioning")
+            logger.info(f"📊 Processing {len(capture_points)} capture points using proven Hugin workflow")
                 
-            # STEP 1: Hugin Service - Complete pipeline execution with native positioning  
-            self._update_job_status(job_id, JobState.PROCESSING, 0.1, "🔧 Executing Hugin pipeline...")
-            self.service_bus.update_service_status("hugin_service", ServiceStatus.BUSY)
+            # Complete Hugin panorama stitching workflow
+            self._update_job_status(job_id, JobState.PROCESSING, 0.1, "🎯 Starting Hugin panorama stitching...")
             
             def hugin_progress_callback(progress: float, message: str):
-                # Map hugin progress from 10% to 80%
-                mapped_progress = 0.1 + (progress * 0.7)
-                self._update_job_status(job_id, JobState.PROCESSING, mapped_progress, f"Hugin: {message}")
+                # Map hugin progress from 10% to 90%
+                mapped_progress = 0.1 + (progress * 0.8)
+                self._update_job_status(job_id, JobState.PROCESSING, mapped_progress, message)
                 
             try:
-                hugin_result = self.hugin_service.execute_pipeline(
+                # Use the proven workflow to create panorama
+                output_file = f"panorama_{job_id}.jpg"
+                panorama_path = self.hugin_service.stitch_panorama(
                     images=image_files,
-                    converted_coordinates=None,  # Use native Hugin automatic positioning
+                    output_file=output_file,
                     progress_callback=hugin_progress_callback
                 )
                 
-                if not hugin_result['success']:
-                    raise Exception(f"Hugin pipeline failed: {hugin_result.get('error', 'Unknown error')}")
-                    
-                tiff_files = [step['output_files'] for step in hugin_result['pipeline_steps'] 
-                             if step['name'] == 'nona' and step['success']]
-                if not tiff_files:
-                    raise Exception("Hugin pipeline did not produce rendered images")
-                    
-                tiff_files = tiff_files[0]  # Get the actual file list
+                # Move panorama to output directory
+                final_output_path = os.path.join(OUTPUT_DIR, f"{job_id}.jpg")
+                shutil.move(panorama_path, final_output_path)
                 
-                # Store Hugin analysis
+                # Calculate file size
+                output_size_mb = os.path.getsize(final_output_path) / (1024 * 1024)
+                
+                processing_time = time.time() - start_time
+                logger.info(f"✅ Panorama processing completed in {processing_time:.1f}s: {output_size_mb:.1f}MB")
+                
+                # Update job status with success
+                self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Panorama completed successfully")
+                
+                # Store results
                 with job_lock:
                     if job_id in jobs:
-                        jobs[job_id]['hugin_pipeline'] = hugin_result
+                        jobs[job_id]['output_file'] = final_output_path
+                        jobs[job_id]['output_size_mb'] = output_size_mb
+                        jobs[job_id]['processing_time'] = processing_time
+                        jobs[job_id]['completed_at'] = datetime.now(timezone.utc).isoformat()
                         
-                logger.info(f"✅ Hugin service: {len(tiff_files)} images rendered in {hugin_result['processing_time']:.1f}s")
-                self.service_bus.update_service_status("hugin_service", ServiceStatus.READY)
-                
-            except Exception as e:
-                self.service_bus.update_service_status("hugin_service", ServiceStatus.ERROR)
-                logger.error(f"❌ Hugin service failed: {e}")
-                raise Exception(f"Hugin pipeline failed: {e}")
-                
-            # STEP 3: Blending Service - Multi-strategy blending
-            self._update_job_status(job_id, JobState.PROCESSING, 0.8, "🎨 Blending panorama...")
-            self.service_bus.update_service_status("blending_service", ServiceStatus.BUSY)
-            
-            def blending_progress_callback(progress: float, message: str):
-                # Map blending progress from 80% to 95%
-                mapped_progress = 0.8 + (progress * 0.15)
-                self._update_job_status(job_id, JobState.PROCESSING, mapped_progress, f"Blending: {message}")
-                
-            try:
-                output_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
-                blending_result = self.blending_service.blend_panorama(
-                    tiff_files=tiff_files,
-                    output_path=str(output_path),
-                    expected_image_count=len(image_files),
-                    progress_callback=blending_progress_callback
-                )
-                
-                if not blending_result['success']:
-                    raise Exception(f"Blending failed: {blending_result.get('error', 'Unknown error')}")
-                    
-                # Store blending analysis
-                with job_lock:
-                    if job_id in jobs:
-                        jobs[job_id]['blending_result'] = blending_result
-                        
-                logger.info(f"✅ Blending service: {blending_result['strategy']} strategy, {blending_result['output_size_mb']:.1f}MB")
-                self.service_bus.update_service_status("blending_service", ServiceStatus.READY)
-                
-            except Exception as e:
-                self.service_bus.update_service_status("blending_service", ServiceStatus.ERROR)
-                logger.error(f"❌ Blending service failed: {e}")
-                raise Exception(f"Blending failed: {e}")
-                
-            # Load final panorama (handle both EXR and TIFF formats)
-            panorama = cv2.imread(str(output_path), cv2.IMREAD_UNCHANGED)
-            
-            # If EXR loading failed, try TIFF fallback
-            if panorama is None and str(output_path).endswith('.exr'):
-                tiff_fallback = str(output_path).replace('.exr', '.tif')
-                if Path(tiff_fallback).exists():
-                    logger.warning(f"⚠️ EXR loading failed, trying TIFF fallback: {tiff_fallback}")
-                    panorama = cv2.imread(tiff_fallback, cv2.IMREAD_UNCHANGED)
-                    if panorama is not None:
-                        output_path = Path(tiff_fallback)  # Update output path for subsequent operations
-                        
-            if panorama is None:
-                raise Exception(f"Failed to load final panorama from {output_path} (tried EXR and TIFF)")
-                
-            # STEP 4: Quality Service - Comprehensive analysis
-            self._update_job_status(job_id, JobState.PROCESSING, 0.95, "🔍 Analyzing quality...")
-            self.service_bus.update_service_status("quality_service", ServiceStatus.BUSY)
-            
-            try:
-                total_processing_time = time.time() - start_time
-                control_points = hugin_result['statistics'].get('control_points_found', 0)
-                
-                # Include all context for quality analysis
-                quality_context = {
-                    'coordinate_validation': validation_results,
-                    'hugin_pipeline': hugin_result,
-                    'blending_result': blending_result
+                return {
+                    'success': True,
+                    'output_file': final_output_path,
+                    'output_size_mb': output_size_mb,
+                    'processing_time': processing_time
                 }
                 
-                quality_metrics = self.quality_service.analyze_panorama_quality(
-                    panorama_path=str(output_path),
-                    image_count=len(image_files),
-                    control_points=control_points,
-                    processing_time=total_processing_time,
-                    additional_context=quality_context
-                )
-                
-                # Store quality analysis
-                with job_lock:
-                    if job_id in jobs:
-                        jobs[job_id]['quality_metrics'] = {
-                            'overall_score': quality_metrics.overall_score,
-                            'sharpness': quality_metrics.sharpness_score,
-                            'contrast': quality_metrics.contrast_score,
-                            'coverage': quality_metrics.coverage_percentage,
-                            'control_points': quality_metrics.control_points_count,
-                            'cp_efficiency': quality_metrics.control_points_efficiency,
-                            'visual_issues': quality_metrics.visual_issues,
-                            'geometric_issues': quality_metrics.geometric_issues
-                        }
-                        
-                logger.info(f"✅ Quality service: {quality_metrics.overall_score:.1f}/100 overall score")
-                self.service_bus.update_service_status("quality_service", ServiceStatus.READY)
-                
             except Exception as e:
-                self.service_bus.update_service_status("quality_service", ServiceStatus.ERROR)
-                logger.error(f"❌ Quality service failed: {e}")
-                # Create minimal metrics
-                class MockMetrics:
-                    def __init__(self):
-                        self.overall_score = 0.0
-                        self.control_points_count = control_points if 'control_points' in locals() else 0
-                        self.processing_time = time.time() - start_time
-                quality_metrics = MockMetrics()
+                logger.error(f"❌ Panorama stitching failed: {e}")
+                self._update_job_status(job_id, JobState.FAILED, 0.0, f"Stitching failed: {str(e)}")
+                raise
                 
-            # Create debug overlay (coordinate positioning vs result)
-            self._update_job_status(job_id, JobState.PROCESSING, 0.97, "Creating debug overlay...")
-            try:
-                from create_overlay_service import create_debug_overlay_for_job
-                
-                # Find debug coordinate image  
-                debug_image_path = f"/tmp/coordinate_debug_{job_id}.png"
-                if os.path.exists(debug_image_path):
-                    overlay_path = create_debug_overlay_for_job(job_id, debug_image_path, str(output_path))
-                    if overlay_path:
-                        logger.info(f"🎨 Debug overlay created: {overlay_path}")
-                    else:
-                        logger.warning("⚠️ Debug overlay creation failed")
-                else:
-                    logger.info(f"📍 No debug image found at: {debug_image_path}")
-            except Exception as overlay_error:
-                logger.warning(f"⚠️ Debug overlay creation failed: {overlay_error}")
-            
-            # Create preview
-            self._update_job_status(job_id, JobState.PROCESSING, 0.98, "Creating preview...")
-            preview_path = OUTPUT_DIR / f"{job_id}_preview.jpg"
-            self._create_photosphere_preview(panorama, str(preview_path), session_data)
-            
-            # Complete processing with URLs
-            total_processing_time = time.time() - start_time
-            
-            # Generate access URLs (Railway provides RAILWAY_STATIC_URL or PORT)
-            base_url = os.environ.get('RAILWAY_STATIC_URL', f"http://localhost:{os.environ.get('PORT', '5001')}")
-            preview_url = f"{base_url}/v1/panorama/preview/{job_id}"
-            download_url = f"{base_url}/v1/panorama/result/{job_id}"
-            
-            completion_message = f"✅ Processing complete! {total_processing_time:.1f}s"
-            self._update_job_status(job_id, JobState.COMPLETED, 1.0, completion_message, result_url=download_url)
-            
-            # Log direct access URLs
-            logger.info(f"🎉 Panorama ready for job: {job_id}")
-            logger.info(f"📖 Preview URL: {preview_url}")
-            logger.info(f"⬇️ Download URL: {download_url}")
-            logger.info(f"🔍 Debug Analysis: hdri-panorama-server-production.up.railway.app/v1/panorama/debug-preview/{job_id}")
-            logger.info(f"📦 Original Bundle: hdri-panorama-server-production.up.railway.app/v1/panorama/original/{job_id}")
-            logger.info(f"🔗 Direct links ready for iOS app download")
-            
-            # Generate comprehensive service bus report
-            service_bus_report = self.service_bus.generate_debug_report()
-            
-            # Return comprehensive results
-            return {
-                'panorama': panorama,
-                'panorama_path': str(output_path),
-                'preview_path': str(preview_path),
-                'processing_time': total_processing_time,
-                'quality_metrics': {
-                    'overall_score': quality_metrics.overall_score,
-                    'control_points': quality_metrics.control_points_count,
-                    'processing_time': quality_metrics.processing_time
-                },
-                'microservices_report': {
-                    'coordinate_validation': validation_results if 'validation_results' in locals() else {},
-                    'hugin_pipeline': hugin_result if 'hugin_result' in locals() else {},
-                    'blending_result': blending_result if 'blending_result' in locals() else {},
-                    'service_bus': service_bus_report
-                }
-            }
-            
         except Exception as e:
-            # Update all services to error state
-            for service_name in ["hugin_service", "quality_service", "blending_service"]:
-                self.service_bus.update_service_status(service_name, ServiceStatus.ERROR)
-                
-            logger.error(f"❌ Microservices processing failed: {e}")
+            logger.error(f"❌ Panorama processing failed: {e}")
             self._update_job_status(job_id, JobState.FAILED, 0.0, f"Processing failed: {str(e)}")
             raise
             

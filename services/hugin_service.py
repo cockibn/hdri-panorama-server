@@ -2,18 +2,17 @@
 """
 Hugin Pipeline Service
 
-Extracts the complete 7-step Hugin panorama stitching workflow into an independent service.
-This allows isolated debugging of each Hugin processing stage:
+Implements the proven 7-step Hugin panorama stitching workflow:
 
-1. pto_gen: Generate project file with ARKit positioning
-2. cpfind: Find control points using multirow strategy
-3. cpclean: Clean and validate control points
-4. autooptimiser: Optimize geometry and photometrics
-5. pano_modify: Set output parameters (canvas, crop, projection)
-6. nona: Render images to equirectangular coordinates
-7. enblend: Multi-band blending for seamless panorama
+1. pto_gen: Generate project file from images
+2. cpfind --multirow: Find control points (multirow for spherical)
+3. celeste_standalone + cpclean: Clean control points
+4. linefind: Find vertical lines for better alignment
+5. autooptimiser -a -m -l -s: Optimize everything
+6. pano_modify: Set equirectangular projection
+7. hugin_executor --stitching: Final stitching with enblend
 
-Each step can be debugged independently to isolate processing issues.
+This follows the proven workflow for perfect equirectangular panoramas.
 """
 
 import os
@@ -109,8 +108,7 @@ class HuginPipelineService:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
-                cwd=self.temp_dir
+                timeout=timeout
             )
             
             if result.stdout:
@@ -130,77 +128,122 @@ class HuginPipelineService:
         except FileNotFoundError:
             raise HuginPipelineError(f"{step_name} command not found: {cmd[0]}")
             
-    def execute_pipeline(self, 
-                        images: List[str], 
-                        converted_coordinates: List[Dict] = None,
-                        progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
+    def stitch_panorama(self, images: List[str], output_file: str = 'panorama.jpg', progress_callback: Optional[Callable] = None) -> str:
         """
-        Execute complete Hugin pipeline with converted coordinates.
+        Complete Hugin panorama stitching using proven 7-step workflow.
         
         Args:
-            images: List of image file paths
-            converted_coordinates: Converted coordinates from coordinate service
+            images: List of image file paths (expects 16 images)
+            output_file: Output panorama filename
             progress_callback: Optional callback for progress updates
             
         Returns:
-            Pipeline execution results with debugging information
+            Path to completed panorama
         """
-        logger.info(f"🎯 Starting Hugin pipeline for {len(images)} images")
+        logger.info(f"🎯 Starting Hugin panorama stitching for {len(images)} images")
         
-        self.arkit_mode = converted_coordinates is not None and len(converted_coordinates) > 0
-        self.pipeline_steps = []
+        if len(images) != 16:
+            raise HuginPipelineError(f"Expected exactly 16 images, got {len(images)}")
         
         start_time = time.time()
         
+        # Always validate image files first
+        self._validate_input_images(images)
+        
+        # Change to temp directory for processing
+        original_cwd = os.getcwd()
+        os.chdir(self.temp_dir)
+        
         try:
-            # Step 1: Generate project file
-            project_file = self._step_1_generate_project(images, converted_coordinates, progress_callback)
+            # Copy images to temp directory with absolute paths
+            local_images = []
+            for i, img_path in enumerate(images):
+                local_name = f'img{i+1:02d}.jpg'
+                shutil.copy2(img_path, local_name)
+                local_images.append(local_name)
+                
+            if progress_callback:
+                progress_callback(0.1, "Copied images to working directory")
             
-            # Step 2: Find control points
-            cp_project = self._step_2_find_control_points(project_file, len(images), progress_callback)
+            pto_file = 'project.pto'
             
-            # Step 3: Clean control points (conditional)
-            clean_project = self._step_3_clean_control_points(cp_project, progress_callback)
+            # Step 1: Generate .pto project file
+            logger.info("🚀 Step 1: Generating project file")
+            self._run_command(['pto_gen', '-o', pto_file] + local_images, "pto_gen")
+            if progress_callback:
+                progress_callback(0.2, "Generated project file")
             
-            # Step 3.5: Detect lines
-            line_project = self._step_3_5_detect_lines(clean_project, progress_callback)
+            # Step 2: Find control points (multirow for spherical)
+            logger.info("🔍 Step 2: Finding control points")
+            self._run_command(['cpfind', '--multirow', '-o', pto_file, pto_file], "cpfind")
+            if progress_callback:
+                progress_callback(0.4, "Found control points")
             
-            # Step 4: Optimize panorama
-            opt_project = self._step_4_optimize(line_project, progress_callback)
+            # Step 3: Clean control points
+            logger.info("🧹 Step 3: Cleaning control points")
+            self._run_command(['celeste_standalone', '-i', pto_file, '-o', pto_file], "celeste_standalone")
+            self._run_command(['cpclean', '-o', pto_file, pto_file], "cpclean")
+            if progress_callback:
+                progress_callback(0.5, "Cleaned control points")
             
-            # Step 5: Set output parameters
-            final_project = self._step_5_set_output(opt_project, progress_callback)
+            # Step 4: Find vertical lines
+            logger.info("📐 Step 4: Finding vertical lines")
+            self._run_command(['linefind', '-o', pto_file, pto_file], "linefind")
+            if progress_callback:
+                progress_callback(0.6, "Found vertical lines")
             
-            # Step 6: Render images
-            tiff_files = self._step_6_render_images(final_project, len(images), progress_callback)
+            # Step 5: Optimize geometry and photometry
+            logger.info("⚙️ Step 5: Optimizing panorama")
+            self._run_command(['autooptimiser', '-a', '-m', '-l', '-s', '-o', pto_file, pto_file], "autooptimiser")
+            if progress_callback:
+                progress_callback(0.7, "Optimized panorama")
             
-            # Step 7: Export TIFF files for blending service (microservices architecture)
-            validated_tiffs = self._step_7_return_tiff_files(tiff_files, len(images), progress_callback)
+            # Step 6: Set equirectangular projection
+            logger.info("🌐 Step 6: Setting equirectangular projection")
+            self._run_command([
+                'pano_modify', '-o', pto_file,
+                '--projection=2', '--fov=360x180',
+                '--canvas=AUTO', '--crop=AUTO',
+                '--center', '--straighten',
+                pto_file
+            ], "pano_modify")
+            if progress_callback:
+                progress_callback(0.8, "Set equirectangular projection")
             
-            total_time = time.time() - start_time
+            # Step 7: Final stitching
+            logger.info("🎨 Step 7: Final stitching with enblend")
+            self._run_command(['hugin_executor', '--stitching', '--prefix=stitched', pto_file], "hugin_executor")
+            if progress_callback:
+                progress_callback(0.95, "Completed stitching")
             
-            # Compilation results
-            results = {
-                'success': True,
-                'tiff_files': validated_tiffs,
-                'processing_time': total_time,
-                'pipeline_steps': [
-                    {
-                        'name': step.name,
-                        'description': step.description,
-                        'success': step.success,
-                        'duration': step.end_time - step.start_time if step.start_time and step.end_time else 0,
-                        'error': step.error,
-                        'output_files': step.output_files
-                    } for step in self.pipeline_steps
-                ],
-                'statistics': {
-                    'arkit_mode': self.arkit_mode,
-                    'geocpset_used': self.geocpset_used,
-                    'control_points_found': self.control_points_found,
-                    'rendered_images': len(tiff_files) if 'tiff_files' in locals() else 0
-                }
-            }
+            # Check for output
+            stitched_tif = 'stitched.tif'
+            if not os.path.exists(stitched_tif):
+                raise HuginPipelineError("Stitching failed; no output file created")
+                
+            # Convert TIFF to final format if needed
+            final_output_path = os.path.join(self.temp_dir, output_file)
+            if output_file.lower().endswith('.tif'):
+                shutil.copy2(stitched_tif, final_output_path)
+            else:
+                # Convert TIFF to JPG using Pillow
+                from PIL import Image
+                with Image.open(stitched_tif) as img:
+                    img.convert('RGB').save(final_output_path, 'JPEG', quality=95)
+            
+            if progress_callback:
+                progress_callback(1.0, "Panorama completed successfully")
+                
+            processing_time = time.time() - start_time
+            logger.info(f"✅ Panorama stitching completed in {processing_time:.1f}s: {final_output_path}")
+            
+            return final_output_path
+            
+        except Exception as e:
+            raise HuginPipelineError(f"Panorama stitching failed: {e}")
+        finally:
+            # Restore original working directory
+            os.chdir(original_cwd)
             
             logger.info(f"🎉 Hugin pipeline completed successfully in {total_time:.1f}s")
             return results

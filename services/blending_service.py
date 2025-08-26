@@ -770,7 +770,7 @@ class BlendingService:
                             if overlap_percentage > 30:  # 30% overlap threshold
                                 overlap_count += 1
             
-            excessive_overlap = max_overlap_percentage > 60 or overlap_count > total_regions * 0.4
+            excessive_overlap = max_overlap_percentage > 30 or overlap_count > total_regions * 0.2
             
             analysis_result = {
                 'total_images': len(tiff_files),
@@ -817,7 +817,7 @@ class BlendingService:
             # Check if this region overlaps significantly with already selected ones
             overlaps_existing = False
             for selected_bbox in selected_bboxes:
-                if self._calculate_bbox_overlap(bbox, selected_bbox) > 40:  # 40% overlap threshold
+                if self._calculate_bbox_overlap(bbox, selected_bbox) > 15:  # Much more conservative 15% threshold
                     overlaps_existing = True
                     break
             
