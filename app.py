@@ -38,7 +38,7 @@ logging.getLogger('services').setLevel(logging.INFO)
 
 # Import microservices
 from services import (
-    create_coordinate_service, create_hugin_service, create_quality_service, create_blending_service,
+    create_hugin_service, create_quality_service, create_blending_service,
     get_service_bus, ServiceStatus
 )
 
@@ -513,7 +513,6 @@ class MicroservicesPanoramaProcessor:
         self.service_bus.enable_debug_mode(True)
         
         # Initialize all microservices
-        self.coordinate_service = create_coordinate_service()
         self.hugin_service = create_hugin_service()  # Let Hugin calculate optimal canvas size
         self.quality_service = create_quality_service()
         self.blending_service = create_blending_service()
@@ -523,12 +522,11 @@ class MicroservicesPanoramaProcessor:
         
         logger.info(f"🏗️ Microservices Panorama Processor initialized")
         logger.info(f"   Resolution: {self.resolution} ({self.canvas_size[0]}×{self.canvas_size[1]})")
-        logger.info(f"   Services: coordinate, hugin, quality, blending")
+        logger.info(f"   Services: hugin (native positioning), quality, blending")
         
     def _register_services(self):
         """Register all services with the service bus."""
         services = [
-            ("coordinate_service", "1.0.0", ["arkit_validation", "coordinate_conversion", "debug_analysis"]),
             ("hugin_service", "1.0.0", ["pto_gen", "cpfind", "autooptimiser", "nona", "full_pipeline"]),
             ("quality_service", "1.0.0", ["quality_analysis", "metrics_calculation", "issue_detection"]),
             ("blending_service", "1.0.0", ["enblend", "opencv_blend", "emergency_fallback"])
@@ -547,33 +545,9 @@ class MicroservicesPanoramaProcessor:
             
             start_time = time.time()
             capture_points = session_data.get('capturePoints', [])
-            
-            # STEP 1: Coordinate Service - ARKit validation and conversion
-            self._update_job_status(job_id, JobState.PROCESSING, 0.05, "🎯 Validating ARKit coordinates...")
-            self.service_bus.update_service_status("coordinate_service", ServiceStatus.BUSY)
-            
-            try:
-                validation_results = self.coordinate_service.validate_arkit_data(capture_points)
-                converted_coordinates = self.coordinate_service.convert_arkit_to_hugin(capture_points, job_id)
+            logger.info(f"📊 Processing {len(capture_points)} capture points with native Hugin positioning")
                 
-                # Store coordinate analysis for debugging
-                with job_lock:
-                    if job_id in jobs:
-                        jobs[job_id]['coordinate_validation'] = validation_results
-                        jobs[job_id]['converted_coordinates_count'] = len(converted_coordinates)
-                        
-                coverage_quality = validation_results.get('coverage_quality', 'UNKNOWN')
-                geometric_issues = validation_results.get('geometric_issues', [])
-                
-                logger.info(f"✅ Coordinate service: {coverage_quality}, {len(geometric_issues)} issues")
-                self.service_bus.update_service_status("coordinate_service", ServiceStatus.READY)
-                
-            except Exception as e:
-                self.service_bus.update_service_status("coordinate_service", ServiceStatus.ERROR)
-                logger.error(f"❌ Coordinate service failed: {e}")
-                converted_coordinates = []
-                
-            # STEP 2: Hugin Service - Complete pipeline execution  
+            # STEP 1: Hugin Service - Complete pipeline execution with native positioning  
             self._update_job_status(job_id, JobState.PROCESSING, 0.1, "🔧 Executing Hugin pipeline...")
             self.service_bus.update_service_status("hugin_service", ServiceStatus.BUSY)
             
@@ -585,7 +559,7 @@ class MicroservicesPanoramaProcessor:
             try:
                 hugin_result = self.hugin_service.execute_pipeline(
                     images=image_files,
-                    converted_coordinates=converted_coordinates,
+                    converted_coordinates=None,  # Use native Hugin automatic positioning
                     progress_callback=hugin_progress_callback
                 )
                 
@@ -778,7 +752,7 @@ class MicroservicesPanoramaProcessor:
             
         except Exception as e:
             # Update all services to error state
-            for service_name in ["coordinate_service", "hugin_service", "quality_service", "blending_service"]:
+            for service_name in ["hugin_service", "quality_service", "blending_service"]:
                 self.service_bus.update_service_status(service_name, ServiceStatus.ERROR)
                 
             logger.error(f"❌ Microservices processing failed: {e}")
@@ -1454,8 +1428,8 @@ def health_check():
                 "architecture": "Microservices 2024 Workflow",
                 "researchBased": True,
                 "documentation": "wiki.panotools.org",
-                "pipeline": "coordinate → hugin → blending → quality",
-                "services": ["ARKitCoordinateService", "HuginPipelineService", "BlendingService", "QualityValidationService"],
+                "pipeline": "hugin → blending → quality",
+                "services": ["HuginPipelineService", "BlendingService", "QualityValidationService"],
                 "resolutions": ["4K (4096×2048)", "6K (6144×3072)", "8K (8192×4096)"]
             }
         }
@@ -1474,53 +1448,6 @@ def health_check():
             "timestamp": datetime.now(timezone.utc).isoformat()
         }), 500
 
-@app.route('/v1/debug/coordinate-test', methods=['POST'])
-@require_api_key
-def test_coordinate_service():
-    """Debug endpoint to test coordinate service in isolation."""
-    try:
-        if 'test_data' not in request.json:
-            return jsonify({"error": "Missing test_data field"}), 400
-            
-        test_capture_points = request.json['test_data']
-        
-        # Create coordinate service for testing
-        service_bus = get_service_bus()
-        coordinate_service = create_coordinate_service()
-        
-        # Register service
-        service_bus.register_service(
-            name="debug_coordinate_service",
-            version="1.0.0",
-            capabilities=["debug_testing"]
-        )
-        
-        # Run validation
-        validation_results = coordinate_service.validate_arkit_data(test_capture_points)
-        
-        # Run conversion (test endpoint uses generic job ID)
-        converted_coordinates = coordinate_service.convert_arkit_to_hugin(test_capture_points, "test_endpoint")
-        
-        # Generate debug report
-        debug_report = coordinate_service.generate_debug_report()
-        
-        return jsonify({
-            "status": "success",
-            "validation_results": validation_results,
-            "converted_coordinates": converted_coordinates[:5],  # First 5 for brevity
-            "total_converted": len(converted_coordinates),
-            "debug_report": debug_report,
-            "service_bus_status": service_bus.generate_debug_report(),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        
-    except Exception as e:
-        logger.error(f"Coordinate test failed: {e}")
-        return jsonify({
-            "status": "error",
-            "error": str(e),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
