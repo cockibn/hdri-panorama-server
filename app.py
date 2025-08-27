@@ -553,8 +553,27 @@ class MicroservicesPanoramaProcessor:
                 processing_time = time.time() - start_time
                 logger.info(f"✅ Panorama processing completed in {processing_time:.1f}s: {output_size_mb:.1f}MB")
                 
+                # Create preview with photosphere metadata
+                logger.info("🖼️ Creating panorama preview with photosphere metadata...")
+                preview_path = os.path.join(OUTPUT_DIR, f"{job_id}_preview.jpg")
+                panorama_image = cv2.imread(final_output_path)
+                if panorama_image is not None:
+                    self._create_photosphere_preview(panorama_image, preview_path, session_data)
+                    logger.info(f"📱 Preview created: {preview_path}")
+                else:
+                    logger.warning("⚠️ Could not load panorama for preview creation")
+                
+                # Generate result URLs
+                result_url = f"/v1/panorama/result/{job_id}" if base_url else None
+                preview_url = f"/v1/panorama/preview/{job_id}" if base_url else None
+                
+                if result_url:
+                    logger.info(f"🔗 Download URL: {base_url}{result_url}")
+                if preview_url:
+                    logger.info(f"👁️ Preview URL: {base_url}{preview_url}")
+                
                 # Update job status with success
-                self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Panorama completed successfully")
+                self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Panorama completed successfully", result_url)
                 
                 # Store results
                 with job_lock:
