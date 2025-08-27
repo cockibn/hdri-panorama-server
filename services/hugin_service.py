@@ -182,9 +182,18 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.8, "Set equirectangular projection")
             
-            # Step 7: Final stitching (longer timeout for high-quality rendering)
-            logger.info("🎨 Step 7: Final stitching with enblend")
-            self._run_command(['hugin_executor', '--stitching', '--prefix=stitched', pto_file], "hugin_executor", timeout=1200)
+            # Step 7: Final stitching with progressive fallback strategy
+            logger.info("🎨 Step 7: Final stitching with memory optimization")
+            
+            # Try optimized stitching first (reduced memory, faster processing)
+            success = self._try_optimized_stitching(pto_file, progress_callback)
+            if not success:
+                logger.warning("⚠️ Optimized stitching failed, trying standard stitching")
+                success = self._try_standard_stitching(pto_file, progress_callback)
+            
+            if not success:
+                logger.error("❌ All stitching strategies failed")
+                raise HuginPipelineError("All stitching methods failed - enblend cannot process this image set")
             if progress_callback:
                 progress_callback(0.95, "Completed stitching")
             
@@ -211,11 +220,110 @@ class HuginPipelineService:
             
             return final_output_path
             
+        except HuginPipelineError:
+            # Re-raise Hugin-specific errors without modification
+            raise
         except Exception as e:
             raise HuginPipelineError(f"Panorama stitching failed: {e}")
         finally:
             # Restore original working directory
             os.chdir(original_cwd)
+
+    def _try_optimized_stitching(self, pto_file: str, progress_callback: Optional[Callable] = None) -> bool:
+        """Try optimized stitching with reduced memory usage and processing time."""
+        try:
+            logger.info("🚀 Attempting optimized stitching (reduced memory, faster)")
+            
+            # Set environment variables for memory optimization
+            env = os.environ.copy()
+            env['OMP_NUM_THREADS'] = '2'  # Limit CPU threads
+            env['TMPDIR'] = '/tmp'  # Use fast temporary directory
+            
+            # Use nona + enblend directly with memory optimization
+            # This bypasses hugin_executor's overhead
+            logger.info("📸 Step 7a: Generating high-quality images with nona")
+            
+            result = subprocess.run([
+                'nona', '-o', 'img_', pto_file
+            ], capture_output=True, text=True, timeout=600, env=env)
+            
+            if result.returncode != 0:
+                logger.warning(f"nona failed: {result.stderr}")
+                return False
+                
+            if progress_callback:
+                progress_callback(0.9, "Generated panorama tiles")
+            
+            # Find generated images  
+            img_files = sorted([f for f in os.listdir('.') if f.startswith('img_') and f.endswith('.tif')])
+            if not img_files:
+                logger.warning("No nona output images found")
+                return False
+                
+            logger.info(f"🎨 Step 7b: Blending {len(img_files)} images with memory optimization")
+            
+            # Use enblend with aggressive memory optimization
+            result = subprocess.run([
+                'enblend', 
+                '-m', '512',  # Limit memory to 512MB
+                '-l', '20',   # Reduce blending levels for speed
+                '--compression=JPEG',  # Use JPEG compression to save memory
+                '-o', 'stitched.tif'
+            ] + img_files, capture_output=True, text=True, timeout=900, env=env)
+            
+            if result.returncode != 0:
+                logger.warning(f"enblend optimized failed: {result.stderr}")
+                return False
+                
+            # Clean up intermediate files
+            for img_file in img_files:
+                try:
+                    os.remove(img_file)
+                except:
+                    pass
+                    
+            if progress_callback:
+                progress_callback(0.95, "Completed optimized stitching")
+                
+            return os.path.exists('stitched.tif')
+            
+        except subprocess.TimeoutExpired:
+            logger.warning("⏰ Optimized stitching timed out")
+            return False
+        except Exception as e:
+            logger.warning(f"⚠️ Optimized stitching failed: {e}")
+            return False
+
+    def _try_standard_stitching(self, pto_file: str, progress_callback: Optional[Callable] = None) -> bool:
+        """Try standard hugin_executor stitching with timeout protection."""
+        try:
+            logger.info("🔄 Attempting standard stitching (hugin_executor)")
+            
+            # Set environment for reduced resource usage
+            env = os.environ.copy()
+            env['OMP_NUM_THREADS'] = '1'  # Single thread for stability
+            env['TMPDIR'] = '/tmp'
+            
+            # Shorter timeout for standard method (10 minutes max)
+            result = subprocess.run([
+                'hugin_executor', '--stitching', '--prefix=stitched', pto_file
+            ], capture_output=True, text=True, timeout=600, env=env)
+            
+            if result.returncode != 0:
+                logger.warning(f"hugin_executor failed: {result.stderr}")
+                return False
+                
+            if progress_callback:
+                progress_callback(0.95, "Completed standard stitching")
+                
+            return os.path.exists('stitched.tif')
+            
+        except subprocess.TimeoutExpired:
+            logger.warning("⏰ Standard stitching timed out after 10 minutes")
+            return False
+        except Exception as e:
+            logger.warning(f"⚠️ Standard stitching failed: {e}")
+            return False
 
     def _validate_input_images(self, images: List[str]):
         """Validate that all input image files exist and are readable."""
