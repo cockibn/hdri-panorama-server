@@ -267,7 +267,7 @@ class HuginPipelineService:
                 'enblend', 
                 '-m', '512',  # Limit memory to 512MB
                 '-l', '20',   # Reduce blending levels for speed
-                '--compression=JPEG',  # Use JPEG compression to save memory
+                '--compression=lzw',  # Use LZW compression to save space
                 '-o', 'stitched.tif'
             ] + img_files, capture_output=True, text=True, timeout=900, env=env)
             
