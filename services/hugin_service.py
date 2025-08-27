@@ -262,11 +262,10 @@ class HuginPipelineService:
                 
             logger.info(f"🎨 Step 7b: Blending {len(img_files)} images with memory optimization")
             
-            # Use enblend with aggressive memory optimization
+            # Use enblend with optimization
             result = subprocess.run([
                 'enblend', 
-                '-m', '512',  # Limit memory to 512MB
-                '-l', '20',   # Reduce blending levels for speed
+                '-l', '15',   # Reduce blending levels for speed (1-29)
                 '--compression=lzw',  # Use LZW compression to save space
                 '-o', 'stitched.tif'
             ] + img_files, capture_output=True, text=True, timeout=900, env=env)
