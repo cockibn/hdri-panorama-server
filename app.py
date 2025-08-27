@@ -12,6 +12,7 @@ import uuid
 import json
 import time
 import threading
+import shutil
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 import psutil
