@@ -182,9 +182,9 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.8, "Set equirectangular projection")
             
-            # Step 7: Final stitching
+            # Step 7: Final stitching (longer timeout for high-quality rendering)
             logger.info("🎨 Step 7: Final stitching with enblend")
-            self._run_command(['hugin_executor', '--stitching', '--prefix=stitched', pto_file], "hugin_executor")
+            self._run_command(['hugin_executor', '--stitching', '--prefix=stitched', pto_file], "hugin_executor", timeout=1200)
             if progress_callback:
                 progress_callback(0.95, "Completed stitching")
             
