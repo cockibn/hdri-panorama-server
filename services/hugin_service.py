@@ -150,17 +150,15 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.2, "Generated project file")
             
-            # Step 2: Find control points (optimized for iPhone ultra-wide spherical)
-            logger.info("🔍 Step 2: Finding control points (optimized for ultra-wide)")
+            # Step 2: Find control points (balanced for ultra-wide + cloud resources)
+            logger.info("🔍 Step 2: Finding control points (cloud-optimized)")
             self._run_command([
                 'cpfind', 
                 '--multirow',                    # Multi-row algorithm for spherical
-                '--sieve1width', '50',           # Increase sieve width for wide-angle
-                '--sieve1height', '50',          # Increase sieve height for wide-angle  
-                '--sieve1size', '300',           # More keypoints per bucket for better coverage
-                '--fullscale',                   # Full-scale processing for accuracy
-                '--ransaciter', '2000',          # More RANSAC iterations for reliability
-                '--ransacdist', '15',            # Tighter distance threshold for precision
+                '--sieve1width', '30',           # Moderate sieve width for wide-angle
+                '--sieve1height', '30',          # Moderate sieve height for wide-angle  
+                '--sieve1size', '200',           # Balanced keypoints per bucket
+                '--ransaciter', '1000',          # Standard RANSAC iterations
                 '-o', pto_file, pto_file
             ], "cpfind", timeout=600)
             if progress_callback:
