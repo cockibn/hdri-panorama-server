@@ -285,11 +285,13 @@ class HuginPipelineService:
                 
             logger.info(f"🎨 Step 7b: Blending {len(img_files)} images with memory optimization")
             
-            # Use enblend with optimization
+            # Use enblend with overlap handling for ultra-wide iPhone captures
             result = subprocess.run([
                 'enblend', 
-                '-l', '15',   # Reduce blending levels for speed (1-29)
-                '--compression=lzw',  # Use LZW compression to save space
+                '-l', '15',              # Reduce blending levels for speed (1-29)
+                '--compression=lzw',     # Use LZW compression to save space
+                '--no-optimize',         # Skip optimization to handle excessive overlap
+                '--fine-mask',           # Use fine mask for better seam detection
                 '-o', 'stitched.tif'
             ] + img_files, capture_output=True, text=True, timeout=900, env=env)
             
