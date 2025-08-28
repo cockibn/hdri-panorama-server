@@ -188,7 +188,7 @@ class HuginPipelineService:
                 '-l',              # Level horizon (straighten)
                 '-s',              # Smart output projection selection
                 '-o', pto_file, pto_file
-            ], "autooptimiser")
+            ], "autooptimiser", timeout=600)  # Increased timeout for more control points
             if progress_callback:
                 progress_callback(0.7, "Optimized panorama")
             
