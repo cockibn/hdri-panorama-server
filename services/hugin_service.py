@@ -150,17 +150,24 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.2, "Generated project file")
             
-            # Step 2: Find control points (optimized for iPhone ultra-wide ground detection)
-            logger.info("🔍 Step 2: Finding control points (ultra-wide ground-optimized)")
+            # Step 2: Find control points (aggressive iPhone ultra-wide ground detection)
+            logger.info("🔍 Step 2: Finding control points (aggressive ultra-wide ground detection)")
             self._run_command([
                 'cpfind', 
-                '--multirow',                    # Multi-row algorithm for spherical
-                '--sieve1width', '50',           # Increased for ultra-wide lens (recommended)
-                '--sieve1height', '50',          # Increased for ultra-wide lens (recommended)  
-                '--sieve1size', '300',           # More keypoints for ground features (recommended)
-                '--ransaciter', '2000',          # Increased RANSAC for challenging scenes
+                '--multirow',                    # Multi-row algorithm for spherical 360°
+                '--fullscale',                   # Full resolution processing for better features
+                '--sieve1width', '50',           # Maximum recommended for ultra-wide
+                '--sieve1height', '50',          # Maximum recommended for ultra-wide  
+                '--sieve1size', '1000',          # 2.5M keypoints per image (vs 750K previous)
+                '--sieve2width', '8',            # More distributed ground control points
+                '--sieve2height', '8',           # More distributed ground control points
+                '--sieve2size', '5',             # Keep 5 points per region (vs default 2)
+                '--ransaciter', '5000',          # More aggressive RANSAC for low-texture
+                '--ransacdist', '15',            # Tighter threshold for precision
+                '--kdtreesteps', '500',          # More feature matching iterations
+                '--kdtreeseconddist', '0.4',     # Relaxed for difficult ground textures
                 '-o', pto_file, pto_file
-            ], "cpfind", timeout=800)
+            ], "cpfind", timeout=1200)
             if progress_callback:
                 progress_callback(0.4, "Found control points")
             
@@ -188,7 +195,7 @@ class HuginPipelineService:
                 '-l',              # Level horizon (straighten)
                 '-s',              # Smart output projection selection
                 '-o', pto_file, pto_file
-            ], "autooptimiser", timeout=600)  # Increased timeout for more control points
+            ], "autooptimiser", timeout=900)  # Extended timeout for aggressive control points
             if progress_callback:
                 progress_callback(0.7, "Optimized panorama")
             
