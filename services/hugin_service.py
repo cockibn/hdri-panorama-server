@@ -150,23 +150,25 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.2, "Generated project file")
             
-            # Step 2: Find control points (balanced for ultra-wide + cloud resources)
-            logger.info("🔍 Step 2: Finding control points (cloud-optimized)")
+            # Step 2: Find control points (optimized for iPhone ultra-wide ground detection)
+            logger.info("🔍 Step 2: Finding control points (ultra-wide ground-optimized)")
             self._run_command([
                 'cpfind', 
                 '--multirow',                    # Multi-row algorithm for spherical
-                '--sieve1width', '30',           # Moderate sieve width for wide-angle
-                '--sieve1height', '30',          # Moderate sieve height for wide-angle  
-                '--sieve1size', '200',           # Balanced keypoints per bucket
-                '--ransaciter', '1000',          # Standard RANSAC iterations
+                '--sieve1width', '50',           # Increased for ultra-wide lens (recommended)
+                '--sieve1height', '50',          # Increased for ultra-wide lens (recommended)  
+                '--sieve1size', '300',           # More keypoints for ground features (recommended)
+                '--ransaciter', '2000',          # Increased RANSAC for challenging scenes
                 '-o', pto_file, pto_file
-            ], "cpfind", timeout=600)
+            ], "cpfind", timeout=800)
             if progress_callback:
                 progress_callback(0.4, "Found control points")
             
-            # Step 3: Clean control points
-            logger.info("🧹 Step 3: Cleaning control points")
-            self._run_command(['celeste_standalone', '-i', pto_file, '-o', pto_file], "celeste_standalone")
+            # Step 3: Clean control points (skip celeste for indoor/ground panoramas)
+            logger.info("🧹 Step 3: Cleaning control points (preserving ground features)")
+            # Skip celeste_standalone - it removes ground textures mistaken for clouds
+            # For indoor/360° panoramas, celeste is counterproductive
+            logger.info("   Skipping celeste (preserves ground control points)")
             self._run_command(['cpclean', '-o', pto_file, pto_file], "cpclean")
             if progress_callback:
                 progress_callback(0.5, "Cleaned control points")
