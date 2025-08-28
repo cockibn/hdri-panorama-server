@@ -139,15 +139,30 @@ class HuginPipelineService:
             
             pto_file = 'project.pto'
             
-            # Step 1: Generate .pto project file
-            logger.info("🚀 Step 1: Generating project file")
-            self._run_command(['pto_gen', '-o', pto_file] + local_images, "pto_gen")
+            # Step 1: Generate .pto project file with iPhone ultra-wide settings
+            logger.info("🚀 Step 1: Generating project file (iPhone ultra-wide optimized)")
+            self._run_command([
+                'pto_gen', 
+                '-f', '13',            # iPhone ultra-wide: 13mm focal length equivalent
+                '-v', '120',           # iPhone ultra-wide: ~120° horizontal FOV
+                '-o', pto_file
+            ] + local_images, "pto_gen")
             if progress_callback:
                 progress_callback(0.2, "Generated project file")
             
-            # Step 2: Find control points (multirow for spherical)
-            logger.info("🔍 Step 2: Finding control points")
-            self._run_command(['cpfind', '--multirow', '-o', pto_file, pto_file], "cpfind")
+            # Step 2: Find control points (optimized for iPhone ultra-wide spherical)
+            logger.info("🔍 Step 2: Finding control points (optimized for ultra-wide)")
+            self._run_command([
+                'cpfind', 
+                '--multirow',                    # Multi-row algorithm for spherical
+                '--sieve1width', '50',           # Increase sieve width for wide-angle
+                '--sieve1height', '50',          # Increase sieve height for wide-angle  
+                '--sieve1size', '300',           # More keypoints per bucket for better coverage
+                '--fullscale',                   # Full-scale processing for accuracy
+                '--ransaciter', '2000',          # More RANSAC iterations for reliability
+                '--ransacdist', '15',            # Tighter distance threshold for precision
+                '-o', pto_file, pto_file
+            ], "cpfind", timeout=600)
             if progress_callback:
                 progress_callback(0.4, "Found control points")
             
@@ -164,19 +179,30 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.6, "Found vertical lines")
             
-            # Step 5: Optimize geometry and photometry
-            logger.info("⚙️ Step 5: Optimizing panorama")
-            self._run_command(['autooptimiser', '-a', '-m', '-l', '-s', '-o', pto_file, pto_file], "autooptimiser")
+            # Step 5: Optimize geometry and photometry (enhanced for spherical 360°)
+            logger.info("⚙️ Step 5: Optimizing spherical panorama")
+            self._run_command([
+                'autooptimiser', 
+                '-a',              # Automatic position optimization
+                '-m',              # Photometric optimization (exposure, vignetting)
+                '-l',              # Level horizon (straighten)
+                '-s',              # Smart output projection selection
+                '--generate-size', # Auto-generate canvas size for 360°
+                '-o', pto_file, pto_file
+            ], "autooptimiser")
             if progress_callback:
                 progress_callback(0.7, "Optimized panorama")
             
-            # Step 6: Set equirectangular projection
-            logger.info("🌐 Step 6: Setting equirectangular projection")
+            # Step 6: Set equirectangular projection (optimized for spherical 360°)
+            logger.info("🌐 Step 6: Setting spherical equirectangular projection")
             self._run_command([
                 'pano_modify', '-o', pto_file,
-                '--projection=2', '--fov=360x180',
-                '--canvas=AUTO', '--crop=AUTO',
-                '--center', '--straighten',
+                '--projection=2',           # Equirectangular (spherical)
+                '--fov=360x180',           # Full 360° horizontal × 180° vertical 
+                '--canvas=8192x4096',      # High resolution 2:1 aspect ratio
+                '--crop=CIRCLE',           # Crop to full sphere (not rectangle)
+                '--center',                # Center the panorama
+                '--straighten',            # Level the horizon
                 pto_file
             ], "pano_modify")
             if progress_callback:
