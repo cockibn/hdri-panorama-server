@@ -23,6 +23,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Callable
 import tempfile
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,110 @@ class HuginPipelineService:
             raise HuginPipelineError(f"Missing Hugin tools: {', '.join(missing_tools)}")
             
         logger.info(f"✅ Hugin installation verified: {len(required_tools)} tools available")
+    
+    def _convert_ios_to_hugin_coordinates(self, capture_points: List[Dict]) -> List[Dict]:
+        """
+        Convert iOS ARKit coordinates to Hugin coordinate system.
+        
+        iOS system: azimuth 0°=East, 90°=North (clockwise from East)
+        Hugin system: yaw 0°=North, 90°=East (clockwise from North)
+        
+        Conversion: hugin_yaw = (90° - ios_azimuth) % 360°
+        """
+        hugin_poses = []
+        
+        for i, point in enumerate(capture_points):
+            ios_azimuth = point.get('azimuth', 0.0)
+            ios_elevation = point.get('elevation', 0.0) 
+            ios_roll = point.get('roll', 0.0)  # Device roll angle
+            
+            # Convert iOS coordinates to Hugin coordinates
+            hugin_yaw = (90 - ios_azimuth) % 360
+            hugin_pitch = ios_elevation  # Direct mapping
+            hugin_roll = ios_roll       # Direct mapping
+            
+            hugin_poses.append({
+                'image_index': i,
+                'yaw': hugin_yaw,
+                'pitch': hugin_pitch, 
+                'roll': hugin_roll,
+                'ios_source': {
+                    'azimuth': ios_azimuth,
+                    'elevation': ios_elevation,
+                    'roll': ios_roll
+                }
+            })
+            
+        logger.info(f"🧭 Converted {len(hugin_poses)} iOS poses to Hugin coordinates")
+        return hugin_poses
+    
+    def _inject_poses_into_pto(self, pto_file: str, poses: List[Dict]) -> None:
+        """
+        Inject yaw/pitch/roll poses into PTO file using pto_var.
+        This provides Hugin with accurate starting positions from iPhone sensors.
+        """
+        logger.info("📍 Injecting sensor poses into project file")
+        
+        # Build pto_var command with all pose parameters
+        pto_var_cmd = ['pto_var']
+        
+        for pose in poses:
+            i = pose['image_index']
+            pto_var_cmd.extend([
+                f'--set', f'y{i}={pose["yaw"]:.2f}',     # Yaw (azimuth)  
+                f'--set', f'p{i}={pose["pitch"]:.2f}',   # Pitch (elevation)
+                f'--set', f'r{i}={pose["roll"]:.2f}'     # Roll
+            ])
+        
+        # Output to temporary file, then replace original
+        temp_pto = pto_file + '.tmp'
+        pto_var_cmd.extend(['-o', temp_pto, pto_file])
+        
+        self._run_command(pto_var_cmd, "pto_var pose injection")
+        
+        # Replace original with pose-injected version
+        shutil.move(temp_pto, pto_file)
+        
+        logger.info(f"✅ Injected {len(poses)} sensor poses into {pto_file}")
+        
+    def _get_first_image_yaw(self, pto_file: str) -> float:
+        """Extract the yaw angle of the first image from PTO file."""
+        try:
+            with open(pto_file, 'r') as f:
+                content = f.read()
+                
+            # Look for first image line (i n"..." y... p... r...)
+            import re
+            match = re.search(r'i n"[^"]*"\s+.*?\by([-\d\.]+)', content)
+            if match:
+                return float(match.group(1))
+                
+        except Exception as e:
+            logger.warning(f"Could not extract first image yaw: {e}")
+            
+        return 0.0
+        
+    def _get_image_yaw(self, pto_file: str, image_index: int) -> float:
+        """Extract the yaw angle of a specific image from PTO file."""
+        try:
+            with open(pto_file, 'r') as f:
+                lines = f.readlines()
+                
+            # Find the image line for the specific index
+            image_line_count = 0
+            for line in lines:
+                if line.startswith('i '):
+                    if image_line_count == image_index:
+                        import re
+                        match = re.search(r'\by([-\d\.]+)', line)
+                        if match:
+                            return float(match.group(1))
+                    image_line_count += 1
+                        
+        except Exception as e:
+            logger.warning(f"Could not extract image {image_index} yaw: {e}")
+            
+        return 0.0
         
     def _run_command(self, cmd: List[str], step_name: str, timeout: int = 300) -> Tuple[str, str]:
         """Execute command with logging and error handling."""
@@ -97,13 +202,14 @@ class HuginPipelineService:
         except FileNotFoundError:
             raise HuginPipelineError(f"{step_name} command not found: {cmd[0]}")
             
-    def stitch_panorama(self, images: List[str], output_file: str = 'panorama.jpg', progress_callback: Optional[Callable] = None) -> str:
+    def stitch_panorama(self, images: List[str], output_file: str = 'panorama.jpg', session_metadata: Optional[Dict] = None, progress_callback: Optional[Callable] = None) -> str:
         """
         Complete Hugin panorama stitching using proven 7-step workflow.
         
         Args:
             images: List of image file paths (expects 16 images)
             output_file: Output panorama filename
+            session_metadata: Optional iOS session metadata with capture points
             progress_callback: Optional callback for progress updates
             
         Returns:
@@ -150,21 +256,59 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.2, "Generated project file")
             
-            # Step 2: Find control points (balanced iPhone ultra-wide ground detection)
-            logger.info("🔍 Step 2: Finding control points (balanced ultra-wide ground detection)")
-            self._run_command([
-                'cpfind', 
-                '--multirow',                    # Multi-row algorithm for spherical 360°
-                '--sieve1width', '50',           # Maximum recommended for ultra-wide
-                '--sieve1height', '50',          # Maximum recommended for ultra-wide  
-                '--sieve1size', '500',           # 1.25M keypoints per image (balanced)
-                '--sieve2size', '3',             # Keep 3 points per region (vs default 2)
-                '--ransaciter', '3000',          # Enhanced RANSAC for low-texture
-                '--ransacdist', '20',            # Balanced threshold for precision
-                '--kdtreesteps', '300',          # More feature matching iterations
-                '--kdtreeseconddist', '0.35',    # Slightly relaxed for ground textures
-                '-o', pto_file, pto_file
-            ], "cpfind", timeout=1000)
+            # Check if we have sensor data for guided stitching
+            use_sensor_guidance = (session_metadata and 
+                                 'capturePoints' in session_metadata and 
+                                 len(session_metadata['capturePoints']) == len(images))
+                                 
+            if use_sensor_guidance:
+                logger.info("🧭 Using sensor-guided stitching workflow")
+                
+                # Step 1.5: Inject sensor poses from iOS app
+                capture_points = session_metadata['capturePoints']
+                hugin_poses = self._convert_ios_to_hugin_coordinates(capture_points)
+                self._inject_poses_into_pto(pto_file, hugin_poses)
+                
+                if progress_callback:
+                    progress_callback(0.25, "Injected sensor poses")
+                
+                # Step 2: Find control points with prealigned optimization
+                logger.info("🔍 Step 2: Finding control points (sensor-guided --prealigned)")
+                self._run_command([
+                    'cpfind', 
+                    '--prealigned',                  # Use sensor poses as starting point
+                    '--sieve1width', '50',           # Maximum recommended for ultra-wide
+                    '--sieve1height', '50',          # Maximum recommended for ultra-wide  
+                    '--sieve1size', '300',           # Moderate keypoints (sensors provide positioning)
+                    '--ransaciter', '2000',          # Reduced RANSAC (sensors guide matching)
+                    '-o', pto_file, pto_file
+                ], "cpfind", timeout=800)
+                
+                if progress_callback:
+                    progress_callback(0.35, "Found control points (sensor-guided)")
+                    
+                # Step 2.5: Add geometric safety net for sparse areas
+                logger.info("🛡️ Adding geometric safety net")
+                self._run_command(['geocpset', '-o', pto_file, pto_file], "geocpset")
+                
+            else:
+                logger.info("🔍 Using traditional feature-based stitching")
+                
+                # Step 2: Find control points (balanced iPhone ultra-wide ground detection)
+                logger.info("🔍 Step 2: Finding control points (balanced ultra-wide ground detection)")
+                self._run_command([
+                    'cpfind', 
+                    '--multirow',                    # Multi-row algorithm for spherical 360°
+                    '--sieve1width', '50',           # Maximum recommended for ultra-wide
+                    '--sieve1height', '50',          # Maximum recommended for ultra-wide  
+                    '--sieve1size', '500',           # 1.25M keypoints per image (balanced)
+                    '--sieve2size', '3',             # Keep 3 points per region (vs default 2)
+                    '--ransaciter', '3000',          # Enhanced RANSAC for low-texture
+                    '--ransacdist', '20',            # Balanced threshold for precision
+                    '--kdtreesteps', '300',          # More feature matching iterations
+                    '--kdtreeseconddist', '0.35',    # Slightly relaxed for ground textures
+                    '-o', pto_file, pto_file
+                ], "cpfind", timeout=1000)
             if progress_callback:
                 progress_callback(0.4, "Found control points")
             
@@ -196,18 +340,58 @@ class HuginPipelineService:
             if progress_callback:
                 progress_callback(0.7, "Optimized panorama")
             
-            # Step 6: Set equirectangular projection (optimized for spherical 360°)
+            # Step 6: Set equirectangular projection and handle calibration dot facing
             logger.info("🌐 Step 6: Setting spherical equirectangular projection")
-            self._run_command([
-                'pano_modify', 
-                '--projection=2',           # Equirectangular (spherical)
-                '--fov=360x180',           # Full 360° horizontal × 180° vertical 
-                '--canvas=8192x4096',      # High resolution 2:1 aspect ratio
-                '--crop=AUTO',             # Autocrop to maximal panorama size
-                '--center',                # Center the panorama
-                '--straighten',            # Level the horizon
-                '-o', pto_file, pto_file
-            ], "pano_modify")
+            
+            if use_sensor_guidance:
+                # For sensor-guided mode, face the calibration dot (first image) front
+                logger.info("🎯 Positioning calibration dot at front center")
+                
+                # Get current yaw of first image after optimization
+                first_image_yaw = self._get_first_image_yaw(pto_file)
+                logger.info(f"   First image current yaw: {first_image_yaw:.1f}°")
+                
+                # Calculate rotation needed to put first image at front (yaw=0°)
+                rotation_needed = -first_image_yaw
+                
+                # Apply rotation to all images to center calibration dot
+                if abs(rotation_needed) > 1.0:  # Only if significant rotation needed
+                    logger.info(f"   Applying {rotation_needed:.1f}° rotation to center calibration dot")
+                    
+                    # Build pto_var command to rotate all images
+                    pto_var_cmd = ['pto_var']
+                    for i in range(len(images)):
+                        current_yaw = self._get_image_yaw(pto_file, i) if i > 0 else first_image_yaw
+                        new_yaw = (current_yaw + rotation_needed) % 360
+                        pto_var_cmd.extend(['--set', f'y{i}={new_yaw:.2f}'])
+                    
+                    temp_pto = pto_file + '.rotation'
+                    pto_var_cmd.extend(['-o', temp_pto, pto_file])
+                    self._run_command(pto_var_cmd, "calibration dot centering")
+                    shutil.move(temp_pto, pto_file)
+                
+                # Set projection without --center to preserve our calibration dot positioning
+                self._run_command([
+                    'pano_modify', 
+                    '--projection=2',           # Equirectangular (spherical)
+                    '--fov=360x180',           # Full 360° horizontal × 180° vertical 
+                    '--canvas=8192x4096',      # High resolution 2:1 aspect ratio
+                    '--crop=AUTO',             # Autocrop to maximal panorama size
+                    '--straighten',            # Level the horizon (no --center)
+                    '-o', pto_file, pto_file
+                ], "pano_modify")
+            else:
+                # Traditional mode with centering
+                self._run_command([
+                    'pano_modify', 
+                    '--projection=2',           # Equirectangular (spherical)
+                    '--fov=360x180',           # Full 360° horizontal × 180° vertical 
+                    '--canvas=8192x4096',      # High resolution 2:1 aspect ratio
+                    '--crop=AUTO',             # Autocrop to maximal panorama size
+                    '--center',                # Center the panorama
+                    '--straighten',            # Level the horizon
+                    '-o', pto_file, pto_file
+                ], "pano_modify")
             if progress_callback:
                 progress_callback(0.8, "Set equirectangular projection")
             

@@ -540,6 +540,7 @@ class MicroservicesPanoramaProcessor:
                 panorama_path = self.hugin_service.stitch_panorama(
                     images=image_files,
                     output_file=output_file,
+                    session_metadata=session_data,
                     progress_callback=hugin_progress_callback
                 )
                 
