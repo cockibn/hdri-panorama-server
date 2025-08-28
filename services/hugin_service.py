@@ -185,7 +185,6 @@ class HuginPipelineService:
                 '-m',              # Photometric optimization (exposure, vignetting)
                 '-l',              # Level horizon (straighten)
                 '-s',              # Smart output projection selection
-                '--generate-size', # Auto-generate canvas size for 360°
                 '-o', pto_file, pto_file
             ], "autooptimiser")
             if progress_callback:
@@ -194,14 +193,14 @@ class HuginPipelineService:
             # Step 6: Set equirectangular projection (optimized for spherical 360°)
             logger.info("🌐 Step 6: Setting spherical equirectangular projection")
             self._run_command([
-                'pano_modify', '-o', pto_file,
+                'pano_modify', 
                 '--projection=2',           # Equirectangular (spherical)
                 '--fov=360x180',           # Full 360° horizontal × 180° vertical 
                 '--canvas=8192x4096',      # High resolution 2:1 aspect ratio
-                '--crop=CIRCLE',           # Crop to full sphere (not rectangle)
+                '--crop=AUTO',             # Autocrop to maximal panorama size
                 '--center',                # Center the panorama
                 '--straighten',            # Level the horizon
-                pto_file
+                '-o', pto_file, pto_file
             ], "pano_modify")
             if progress_callback:
                 progress_callback(0.8, "Set equirectangular projection")
