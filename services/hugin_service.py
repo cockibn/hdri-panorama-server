@@ -143,8 +143,8 @@ class HuginPipelineService:
             logger.info("🚀 Step 1: Generating project file (iPhone ultra-wide optimized)")
             self._run_command([
                 'pto_gen', 
-                '-f', '13',            # iPhone ultra-wide: 13mm focal length equivalent
-                '-v', '120',           # iPhone ultra-wide: ~120° horizontal FOV
+                '-f', '120',           # iPhone ultra-wide: 120° horizontal FOV
+                '-p', '0',             # Rectilinear projection (standard lens model)
                 '-o', pto_file
             ] + local_images, "pto_gen")
             if progress_callback:
