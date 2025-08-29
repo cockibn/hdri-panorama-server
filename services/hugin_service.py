@@ -74,12 +74,20 @@ class HuginPipelineService:
         """
         Convert iOS ARKit coordinates to Hugin coordinate system.
         
-        iOS system: azimuth 0°=East, 90°=North (clockwise from East)
-        Hugin system: yaw 0°=North, 90°=East (clockwise from North)
+        Key insight: iOS sends absolute compass directions, but Hugin needs
+        coordinates relative to the calibration point (first image) as front center.
         
-        Conversion: hugin_yaw = (90° - ios_azimuth) % 360°
+        Strategy: Make first capture point (calibration dot) face forward (yaw=0°)
+        and all other points relative to that reference.
         """
         hugin_poses = []
+        
+        if not capture_points:
+            return hugin_poses
+            
+        # Get calibration reference point (first capture)
+        calibration_azimuth = capture_points[0].get('azimuth', 0.0)
+        logger.info(f"🎯 Calibration reference: iOS azimuth={calibration_azimuth:.1f}°")
         
         for i, point in enumerate(capture_points):
             ios_azimuth = point.get('azimuth', 0.0)
@@ -89,13 +97,17 @@ class HuginPipelineService:
             # DEBUG: Log original iOS values
             logger.info(f"   📍 Point {i}: iOS azimuth={ios_azimuth:.1f}°, elevation={ios_elevation:.1f}°")
             
-            # Convert iOS coordinates to Hugin coordinates
-            hugin_yaw = (90 - ios_azimuth) % 360
+            # Convert to relative coordinates with calibration point as front (yaw=0°)
+            relative_azimuth = (ios_azimuth - calibration_azimuth) % 360
+            
+            # Convert iOS coordinates to Hugin coordinates (iOS 0°=East, Hugin 0°=North)
+            # With calibration point facing forward
+            hugin_yaw = (90 - relative_azimuth) % 360
             hugin_pitch = ios_elevation  # Direct mapping
             hugin_roll = ios_roll       # Direct mapping
             
             # DEBUG: Log converted values
-            logger.info(f"      → Hugin yaw={hugin_yaw:.1f}°, pitch={hugin_pitch:.1f}°")
+            logger.info(f"      → Relative: {relative_azimuth:.1f}°, Hugin yaw={hugin_yaw:.1f}°, pitch={hugin_pitch:.1f}°")
             
             hugin_poses.append({
                 'image_index': i,
