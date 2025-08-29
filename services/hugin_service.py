@@ -100,9 +100,11 @@ class HuginPipelineService:
             # Convert to relative coordinates with calibration point as front (yaw=0°)
             relative_azimuth = (ios_azimuth - calibration_azimuth) % 360
             
-            # Convert iOS coordinates to Hugin coordinates (iOS 0°=East, Hugin 0°=North)
-            # With calibration point facing forward
-            hugin_yaw = (90 - relative_azimuth) % 360
+            # Convert to Hugin coordinates where calibration point faces front center (yaw=0°)
+            # For the calibration point: relative_azimuth=0° should map to hugin_yaw=0° (front)
+            # iOS coordinates are clockwise from East, Hugin coordinates are clockwise from North
+            # But we want calibration point at front (0°), not North
+            hugin_yaw = (360 - relative_azimuth) % 360
             hugin_pitch = ios_elevation  # Direct mapping
             hugin_roll = ios_roll       # Direct mapping
             
