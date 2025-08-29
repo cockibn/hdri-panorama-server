@@ -86,10 +86,16 @@ class HuginPipelineService:
             ios_elevation = point.get('elevation', 0.0) 
             ios_roll = point.get('roll', 0.0)  # Device roll angle
             
+            # DEBUG: Log original iOS values
+            logger.info(f"   📍 Point {i}: iOS azimuth={ios_azimuth:.1f}°, elevation={ios_elevation:.1f}°")
+            
             # Convert iOS coordinates to Hugin coordinates
             hugin_yaw = (90 - ios_azimuth) % 360
             hugin_pitch = ios_elevation  # Direct mapping
             hugin_roll = ios_roll       # Direct mapping
+            
+            # DEBUG: Log converted values
+            logger.info(f"      → Hugin yaw={hugin_yaw:.1f}°, pitch={hugin_pitch:.1f}°")
             
             hugin_poses.append({
                 'image_index': i,
