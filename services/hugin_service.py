@@ -54,7 +54,8 @@ class HuginPipelineService:
         """Verify that all required Hugin tools are available."""
         required_tools = [
             'pto_gen', 'cpfind', 'celeste_standalone', 'cpclean', 
-            'linefind', 'autooptimiser', 'pano_modify', 'hugin_executor'
+            'linefind', 'autooptimiser', 'pano_modify', 'hugin_executor',
+            'pto_var', 'geocpset'  # Added for sensor-guided stitching
         ]
         
         missing_tools = []
@@ -261,37 +262,56 @@ class HuginPipelineService:
                                  'capturePoints' in session_metadata and 
                                  len(session_metadata['capturePoints']) == len(images))
                                  
+            # Debug logging for workflow selection
+            if session_metadata:
+                logger.info(f"📊 Session metadata available: {list(session_metadata.keys())}")
+                if 'capturePoints' in session_metadata:
+                    logger.info(f"📍 Capture points: {len(session_metadata['capturePoints'])}, Images: {len(images)}")
+                else:
+                    logger.warning("❌ No capturePoints in session metadata")
+            else:
+                logger.warning("❌ No session metadata provided")
+                                 
             if use_sensor_guidance:
                 logger.info("🧭 Using sensor-guided stitching workflow")
                 
-                # Step 1.5: Inject sensor poses from iOS app
-                capture_points = session_metadata['capturePoints']
-                hugin_poses = self._convert_ios_to_hugin_coordinates(capture_points)
-                self._inject_poses_into_pto(pto_file, hugin_poses)
-                
-                if progress_callback:
-                    progress_callback(0.25, "Injected sensor poses")
-                
-                # Step 2: Find control points with prealigned optimization
-                logger.info("🔍 Step 2: Finding control points (sensor-guided --prealigned)")
-                self._run_command([
-                    'cpfind', 
-                    '--prealigned',                  # Use sensor poses as starting point
-                    '--sieve1width', '50',           # Maximum recommended for ultra-wide
-                    '--sieve1height', '50',          # Maximum recommended for ultra-wide  
-                    '--sieve1size', '300',           # Moderate keypoints (sensors provide positioning)
-                    '--ransaciter', '2000',          # Reduced RANSAC (sensors guide matching)
-                    '-o', pto_file, pto_file
-                ], "cpfind", timeout=800)
-                
-                if progress_callback:
-                    progress_callback(0.35, "Found control points (sensor-guided)")
+                try:
+                    # Step 1.5: Inject sensor poses from iOS app
+                    capture_points = session_metadata['capturePoints']
+                    hugin_poses = self._convert_ios_to_hugin_coordinates(capture_points)
+                    self._inject_poses_into_pto(pto_file, hugin_poses)
                     
-                # Step 2.5: Add geometric safety net for sparse areas
-                logger.info("🛡️ Adding geometric safety net")
-                self._run_command(['geocpset', '-o', pto_file, pto_file], "geocpset")
+                    if progress_callback:
+                        progress_callback(0.25, "Injected sensor poses")
+                    
+                    # Step 2: Find control points with prealigned optimization
+                    logger.info("🔍 Step 2: Finding control points (sensor-guided --prealigned)")
+                    self._run_command([
+                        'cpfind', 
+                        '--prealigned',                  # Use sensor poses as starting point
+                        '--sieve1width', '50',           # Maximum recommended for ultra-wide
+                        '--sieve1height', '50',          # Maximum recommended for ultra-wide  
+                        '--sieve1size', '300',           # Moderate keypoints (sensors provide positioning)
+                        '--ransaciter', '2000',          # Reduced RANSAC (sensors guide matching)
+                        '-o', pto_file, pto_file
+                    ], "cpfind", timeout=800)
+                    
+                    if progress_callback:
+                        progress_callback(0.35, "Found control points (sensor-guided)")
+                        
+                    # Step 2.5: Add geometric safety net for sparse areas
+                    logger.info("🛡️ Adding geometric safety net")
+                    self._run_command(['geocpset', '-o', pto_file, pto_file], "geocpset")
+                    
+                    sensor_guided_success = True
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Sensor-guided stitching failed: {e}")
+                    logger.info("🔄 Falling back to traditional feature-based stitching")
+                    use_sensor_guidance = False
+                    sensor_guided_success = False
                 
-            else:
+            if not use_sensor_guidance:
                 logger.info("🔍 Using traditional feature-based stitching")
                 
                 # Step 2: Find control points (balanced iPhone ultra-wide ground detection)
