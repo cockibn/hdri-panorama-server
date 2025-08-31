@@ -573,6 +573,12 @@ class MicroservicesPanoramaProcessor:
                 if preview_url:
                     logger.info(f"👁️ Preview URL: {base_url}{preview_url}")
                 
+                # Log bundle download information
+                bundle_url = f"/v1/panorama/original/{job_id}"
+                logger.info(f"📦 Original Bundle URL: {base_url}{bundle_url}")
+                logger.info(f"📊 Enhanced Bundle: Available (includes positioning metadata)")
+                logger.info(f"💡 Use bundle URL to download original images with metadata for debugging")
+                
                 # Update job status with success
                 self._update_job_status(job_id, JobState.COMPLETED, 1.0, "Panorama completed successfully", result_url)
                 
@@ -824,7 +830,21 @@ def get_job_status(job_id: str):
         job = jobs.get(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
-    return jsonify(job)
+    
+    # Enhance status response with bundle download URL for completed jobs
+    enhanced_job = job.copy()
+    if job.get("state") == JobState.COMPLETED:
+        # Add bundle download URLs to completed job status
+        base_url = f"{request.scheme}://{request.host}"
+        enhanced_job["bundleDownloadUrl"] = f"{base_url}/v1/panorama/original/{job_id}"
+        enhanced_job["bundleInfo"] = {
+            "description": "Download original images with positioning metadata",
+            "format": "ZIP archive with enhanced metadata",
+            "includes": ["Original JPEG images", "Session positioning data", "Coordinate system metadata"]
+        }
+        logger.info(f"📦 Status request for completed job {job_id} - bundle download available")
+    
+    return jsonify(enhanced_job)
 
 @app.route('/v1/panorama/result/<job_id>', methods=['GET'])
 def download_result(job_id: str):
@@ -1212,11 +1232,25 @@ def download_original_bundle(job_id: str):
             "job_id": job_id
         }), 404
     
-    # Check file size and log download
+    # Check file size and log comprehensive download info
     file_size = bundle_path.stat().st_size
     file_size_mb = file_size / (1024 * 1024)
     
-    logger.info(f"📦 Serving {bundle_type} bundle for job {job_id} - file size: {file_size_mb:.1f}MB")
+    # Get additional job metadata for enhanced logging
+    session_data = job.get('session_data', {})
+    image_count = len(session_data.get('capturePoints', []))
+    processing_status = job.get('status', 'unknown')
+    client_ip = request.remote_addr
+    user_agent = request.headers.get('User-Agent', 'unknown')
+    
+    logger.info(f"📦 BUNDLE DOWNLOAD REQUEST:")
+    logger.info(f"   Job ID: {job_id}")
+    logger.info(f"   Bundle Type: {bundle_type} {'(includes positioning metadata)' if bundle_type == 'enhanced' else '(original images only)'}")
+    logger.info(f"   File Size: {file_size_mb:.1f}MB ({file_size:,} bytes)")
+    logger.info(f"   Image Count: {image_count} images")
+    logger.info(f"   Processing Status: {processing_status}")
+    logger.info(f"   Client: {client_ip} ({user_agent})")
+    logger.info(f"   Bundle Path: {bundle_path}")
     
     # Generate a descriptive filename with timestamp
     job_timestamp = job.get('created_at', 'unknown')
@@ -1233,6 +1267,9 @@ def download_original_bundle(job_id: str):
     # Include bundle type in filename for clarity
     bundle_suffix = "_with_metadata" if bundle_type == "enhanced" else ""
     descriptive_filename = f"hdri360_original{bundle_suffix}_{timestamp_str}_{job_id[:8]}.zip"
+    
+    logger.info(f"   Download Filename: {descriptive_filename}")
+    logger.info(f"✅ Serving bundle download for job {job_id}")
     
     return send_file(
         bundle_path, 
