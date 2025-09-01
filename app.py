@@ -241,23 +241,27 @@ def extract_bundle_images(bundle_file, upload_dir):
                 filename = f'image_{i:04d}.jpg'
                 filepath = Path(upload_dir) / filename
                 
-                # Apply EXIF orientation correction
+                # Save image with EXIF preservation
                 try:
                     from PIL import Image, ImageOps
                     import io
                     
                     with Image.open(io.BytesIO(img_data)) as img:
-                        # Apply EXIF orientation
+                        # Preserve EXIF data before orientation correction
+                        exif_data = img.info.get('exif')
+                        
+                        # Apply EXIF orientation correction
                         oriented_img = ImageOps.exif_transpose(img)
-                        if oriented_img:
-                            oriented_img.save(filepath, 'JPEG', quality=98, optimize=True)
-                            if oriented_img != img:
-                                oriented_img.close()
+                        if oriented_img and oriented_img != img:
+                            # Orientation was applied, save with preserved EXIF
+                            oriented_img.save(filepath, 'JPEG', quality=98, optimize=True, exif=exif_data)
+                            oriented_img.close()
                         else:
-                            img.save(filepath, 'JPEG', quality=98, optimize=True)
+                            # No orientation change needed, save original with EXIF
+                            img.save(filepath, 'JPEG', quality=98, optimize=True, exif=exif_data)
                 except Exception as e:
-                    logger.warning(f"EXIF orientation failed for image {i}: {e}")
-                    # Fallback to raw save
+                    logger.warning(f"EXIF-preserving image save failed for image {i}: {e}")
+                    # Fallback to raw save (preserves original EXIF)
                     with open(filepath, 'wb') as f:
                         f.write(img_data)
                 
