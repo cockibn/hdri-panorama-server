@@ -197,28 +197,37 @@ def extract_bundle_images(bundle_file, upload_dir):
         # Extract image data (all images concatenated as JPEGs)
         image_data = remaining_data[images_start + len(images_marker):]
         
-        # Parse concatenated JPEGs properly - avoid false positives from embedded data
+        # Extract exactly the number of images specified in metadata (usually 16)
+        # Parse concatenated JPEGs by finding main image boundaries, not embedded thumbnails
         jpeg_starts = []
+        expected_images = image_count  # From V2 bundle header
+        
+        # Find JPEG start positions but limit to expected count
         i = 0
-        while i < len(image_data) - 1:
-            # Look for JPEG SOI marker at current position
-            if image_data[i:i+2] == b'\xff\xd8':
-                jpeg_starts.append(i)
+        while i < len(image_data) - 1 and len(jpeg_starts) < expected_images:
+            if image_data[i:i+2] == b'\xff\xd8':  # JPEG SOI marker
+                # Validate this looks like a real image start (not embedded thumbnail)
+                # Check for reasonable image size (embedded thumbnails are usually < 50KB)
+                potential_end = len(image_data)  # Default to end of data
                 
-                # Find the end of this JPEG by looking for EOI marker
-                j = i + 2
-                while j < len(image_data) - 1:
-                    if image_data[j:j+2] == b'\xff\xd9':  # JPEG EOI marker
-                        i = j + 2  # Move past this JPEG
+                # Look for next SOI to determine size
+                for j in range(i + 50000, len(image_data) - 1):  # Skip first 50KB to avoid embedded thumbnails
+                    if image_data[j:j+2] == b'\xff\xd8':
+                        potential_end = j
                         break
-                    j += 1
+                
+                potential_size = potential_end - i
+                if potential_size >= 500000:  # At least 500KB for valid image
+                    jpeg_starts.append(i)
+                    logger.debug(f"Found main JPEG at position {i}, estimated size: {potential_size} bytes")
+                    i = potential_end  # Jump to next potential image
                 else:
-                    # No EOI found, assume this JPEG goes to end or next SOI
-                    break
+                    logger.debug(f"Skipping small JPEG at position {i}, size: {potential_size} bytes")
+                    i += 1
             else:
                 i += 1
         
-        logger.info(f"Found {len(jpeg_starts)} properly parsed JPEG images in bundle")
+        logger.info(f"Found {len(jpeg_starts)} main JPEG images in bundle (expected: {expected_images})")
         
         # Extract all valid images - iOS now only sends valid full-resolution images
         extracted_count = 0
