@@ -205,16 +205,17 @@ def extract_bundle_images(bundle_file, upload_dir):
         
         logger.info(f"Found {len(jpeg_starts)} JPEG images in bundle")
         
-        # Extract each image
-        for i in range(min(len(jpeg_starts), image_count)):
+        # Extract all valid images - iOS now only sends valid full-resolution images
+        extracted_count = 0
+        for i in range(min(len(jpeg_starts), 16)):  # Max 16 images expected
             try:
                 start = jpeg_starts[i]
                 end = jpeg_starts[i+1] if i+1 < len(jpeg_starts) else len(image_data)
                 img_data = image_data[start:end]
                 
-                # Skip tiny placeholder images (< 10KB)
-                if len(img_data) < 10000:
-                    logger.warning(f"⚠️ Skipping placeholder image {i}: {len(img_data)} bytes")
+                # Skip tiny placeholder images (< 50KB - should only be valid full-res images)
+                if len(img_data) < 50000:
+                    logger.warning(f"⚠️ Skipping small image {i}: {len(img_data)} bytes")
                     continue
                 
                 # Save image file with EXIF orientation correction
