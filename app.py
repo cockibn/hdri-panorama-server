@@ -197,37 +197,32 @@ def extract_bundle_images(bundle_file, upload_dir):
         # Extract image data (all images concatenated as JPEGs)
         image_data = remaining_data[images_start + len(images_marker):]
         
-        # Extract exactly the number of images specified in metadata (usually 16)
-        # Parse concatenated JPEGs by finding main image boundaries, not embedded thumbnails
-        jpeg_starts = []
-        expected_images = image_count  # From V2 bundle header
-        
-        # Find JPEG start positions but limit to expected count
+        # AGGRESSIVE FIX: Find all JPEG markers then filter by size to get only main images
+        all_jpeg_starts = []
         i = 0
-        while i < len(image_data) - 1 and len(jpeg_starts) < expected_images:
+        while i < len(image_data) - 1:
             if image_data[i:i+2] == b'\xff\xd8':  # JPEG SOI marker
-                # Validate this looks like a real image start (not embedded thumbnail)
-                # Check for reasonable image size (embedded thumbnails are usually < 50KB)
-                potential_end = len(image_data)  # Default to end of data
-                
-                # Look for next SOI to determine size
-                for j in range(i + 50000, len(image_data) - 1):  # Skip first 50KB to avoid embedded thumbnails
-                    if image_data[j:j+2] == b'\xff\xd8':
-                        potential_end = j
-                        break
-                
-                potential_size = potential_end - i
-                if potential_size >= 500000:  # At least 500KB for valid image
-                    jpeg_starts.append(i)
-                    logger.debug(f"Found main JPEG at position {i}, estimated size: {potential_size} bytes")
-                    i = potential_end  # Jump to next potential image
-                else:
-                    logger.debug(f"Skipping small JPEG at position {i}, size: {potential_size} bytes")
-                    i += 1
-            else:
-                i += 1
+                all_jpeg_starts.append(i)
+            i += 1
         
-        logger.info(f"Found {len(jpeg_starts)} main JPEG images in bundle (expected: {expected_images})")
+        logger.info(f"Found {len(all_jpeg_starts)} total JPEG markers, filtering for main images...")
+        
+        # Calculate sizes and filter out small embedded thumbnails
+        jpeg_starts = []
+        for idx, start in enumerate(all_jpeg_starts):
+            end = all_jpeg_starts[idx + 1] if idx + 1 < len(all_jpeg_starts) else len(image_data)
+            size = end - start
+            
+            logger.debug(f"JPEG {idx} at position {start}: {size} bytes")
+            
+            # Only keep large images (> 1MB = main images, skip < 1MB = thumbnails)
+            if size >= 1000000:  # 1MB threshold
+                jpeg_starts.append(start)
+                logger.info(f"✅ Keeping main JPEG {len(jpeg_starts)-1}: {size} bytes")
+            else:
+                logger.info(f"❌ Skipping thumbnail JPEG: {size} bytes")
+        
+        logger.info(f"Filtered to {len(jpeg_starts)} main images (expected: {image_count})")
         
         # Extract all valid images - iOS now only sends valid full-resolution images
         extracted_count = 0
