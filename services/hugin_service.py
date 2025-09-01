@@ -565,20 +565,21 @@ class HuginPipelineService:
             # RESEARCH-BASED FIX: iPhone 13mm ultra-wide (120° FOV) creates ~50-60% overlap
             # which triggers enblend's "excessive overlap" error. Solutions from research:
             
-            # Try Method 1: enblend with research-verified parameters for excessive overlap
-            logger.info("🔬 Method 1: Research-based enblend excessive overlap handling")
+            # Try Method 1: enblend with improved seam placement and blending
+            logger.info("🔬 Method 1: Optimized enblend for better seam placement")
             result = subprocess.run([
                 'enblend', 
-                '--no-optimize',         # CRITICAL: Skip problematic overlap optimization
-                '--fine-mask',           # Higher resolution masks for overlap issues
-                '-l', '10',              # Reduce blending levels for excessive overlap
+                '--fine-mask',           # Higher resolution masks for detail preservation
+                '-l', '15',              # Increased blending levels for smoother transitions
+                '-w', '8',               # Feather width for smooth seam transitions
                 '--compression=lzw',     # Maintain compression
-                '--primary-seam-generator=nearest-feature-transform',  # Alternative seam method
+                '--primary-seam-generator=graph-cut',  # Better seam placement algorithm
+                '--optimizer-weights=3:2',  # Balanced seam optimization
                 '-o', 'stitched.tif'
             ] + img_files, capture_output=True, text=True, timeout=900, env=env)
             
             if result.returncode == 0:
-                logger.info("✅ Method 1 successful: enblend with excessive overlap handling")
+                logger.info("✅ Method 1 successful: enblend with optimized seam placement")
                 # Clean up intermediate files
                 for img_file in img_files:
                     try:
@@ -593,8 +594,33 @@ class HuginPipelineService:
             else:
                 logger.warning(f"Method 1 failed: {result.stderr}")
                 
-            # Method 2: Simple averaging blending (emergency fallback)
-            logger.info("🛟 Method 2: Emergency averaging blend for excessive overlap")
+            # Method 2: Conservative blending with minimal optimization
+            logger.info("🔄 Method 2: Conservative enblend for problem overlaps")
+            result = subprocess.run([
+                'enblend',
+                '--no-optimize',         # Skip optimization for problem cases
+                '--fine-mask',          
+                '-l', '12',              # Moderate blending levels
+                '-w', '4',               # Smaller feather width for conservative blending
+                '--compression=lzw',
+                '--primary-seam-generator=minimum-spanning-tree',  # More conservative seaming
+                '-o', 'stitched.tif'
+            ] + img_files, capture_output=True, text=True, timeout=600, env=env)
+            
+            if result.returncode == 0:
+                logger.info("✅ Method 2 successful: conservative enblend")
+                # Clean up intermediate files
+                for img_file in img_files:
+                    try:
+                        os.remove(img_file)
+                    except:
+                        pass
+                return os.path.exists('stitched.tif')
+            else:
+                logger.warning(f"Method 2 failed: {result.stderr}")
+                
+            # Method 3: Simple averaging blending (emergency fallback)
+            logger.info("🛟 Method 3: Emergency averaging blend for excessive overlap")
             return self._emergency_average_blend(img_files, progress_callback)
             
         except subprocess.TimeoutExpired:
