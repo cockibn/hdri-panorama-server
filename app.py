@@ -76,8 +76,8 @@ def validate_job_id(job_id: str) -> bool:
 
 def validate_bundle_format(bundle_data):
     """Validate bundle data format and prevent malicious content."""
-    if not bundle_data.startswith(b"HDRI_BUNDLE_V1\n"):
-        raise ValueError("Invalid bundle format header")
+    if not bundle_data.startswith(b"HDRI_BUNDLE_V2_WITH_METADATA\n"):
+        raise ValueError("Invalid bundle format header - expecting HDRI_BUNDLE_V2_WITH_METADATA")
     
     if len(bundle_data) > 500 * 1024 * 1024:  # 500MB limit
         raise ValueError("Bundle exceeds maximum size limit")
@@ -151,66 +151,123 @@ def validate_image_index(index_str):
         raise ValueError(f"Invalid image index: {index_str}")
 
 def extract_bundle_images(bundle_file, upload_dir):
-    """Extract images from iOS app bundle format."""
+    """Extract images from iOS app bundle V2 format with metadata."""
     image_files = []
     try:
         bundle_data = bundle_file.read()
         validate_bundle_format(bundle_data)
         
-        parts = bundle_data.split(b'\n', 2)
-        if len(parts) < 3:
-            raise ValueError("Malformed bundle structure")
+        # Parse V2 format: HDRI_BUNDLE_V2_WITH_METADATA\n{count}\nSESSION_METADATA:{size}\n{json}\nORIGINAL_IMAGES:\n{images}
+        lines = bundle_data.split(b'\n', 4)
+        if len(lines) < 5:
+            raise ValueError("Malformed V2 bundle structure")
             
+        # Parse image count
         try:
-            image_count = int(parts[1])
+            image_count = int(lines[1])
         except ValueError:
             raise ValueError("Invalid image count in bundle")
             
         if image_count <= 0 or image_count > 50:  # Reasonable limits
             raise ValueError(f"Invalid image count: {image_count}")
-            
-        data = parts[2]
-        original_exif_data = []
-        offset = 0
         
-        # Extract all images
-        for i in range(image_count):
+        # Parse metadata section
+        metadata_header = lines[2].decode('utf-8')
+        if not metadata_header.startswith('SESSION_METADATA:'):
+            raise ValueError("Missing SESSION_METADATA section")
+        
+        metadata_size = int(metadata_header.split(':')[1])
+        
+        # Extract metadata JSON (for future use)
+        remaining_data = b'\n'.join(lines[3:])
+        metadata_json = remaining_data[:metadata_size]
+        try:
+            import json
+            metadata = json.loads(metadata_json)
+            logger.info(f"📊 Extracted session metadata: {metadata.get('sessionId', 'unknown')}")
+        except Exception as e:
+            logger.warning(f"Could not parse metadata JSON: {e}")
+        
+        # Find ORIGINAL_IMAGES marker
+        images_marker = b'ORIGINAL_IMAGES:\n'
+        images_start = remaining_data.find(images_marker)
+        if images_start == -1:
+            raise ValueError("Missing ORIGINAL_IMAGES section")
+        
+        # Extract image data (all images concatenated as JPEGs)
+        image_data = remaining_data[images_start + len(images_marker):]
+        
+        # Find all JPEG markers and extract images
+        jpeg_starts = []
+        for i in range(len(image_data) - 1):
+            if image_data[i:i+2] == b'\xff\xd8':  # JPEG SOI marker
+                jpeg_starts.append(i)
+        
+        logger.info(f"Found {len(jpeg_starts)} JPEG images in bundle")
+        
+        # Extract each image
+        for i in range(min(len(jpeg_starts), image_count)):
             try:
-                header_end = data.find(b'\n', offset)
-                if header_end == -1:
-                    raise ValueError(f"Malformed header for image {i}")
-                    
-                header = data[offset:header_end].decode('utf-8', errors='strict')
+                start = jpeg_starts[i]
+                end = jpeg_starts[i+1] if i+1 < len(jpeg_starts) else len(image_data)
+                img_data = image_data[start:end]
                 
-                if ':' not in header:
-                    raise ValueError(f"Invalid header format for image {i}: {header}")
-                    
-                index_str, size_str = header.split(':', 1)
+                # Skip tiny placeholder images (< 10KB)
+                if len(img_data) < 10000:
+                    logger.warning(f"⚠️ Skipping placeholder image {i}: {len(img_data)} bytes")
+                    continue
                 
-                # Validate index to prevent path traversal
-                index = validate_image_index(index_str)
+                # Save image file with EXIF orientation correction
+                filename = f'image_{i:04d}.jpg'
+                filepath = Path(upload_dir) / filename
                 
+                # Apply EXIF orientation correction
                 try:
-                    size = int(size_str)
-                except ValueError:
-                    raise ValueError(f"Invalid size for image {i}: {size_str}")
+                    from PIL import Image, ImageOps
+                    import io
                     
-                if size <= 0 or size > 50 * 1024 * 1024:  # 50MB per image limit
-                    raise ValueError(f"Invalid image size for image {i}: {size}")
+                    with Image.open(io.BytesIO(img_data)) as img:
+                        # Apply EXIF orientation
+                        oriented_img = ImageOps.exif_transpose(img)
+                        if oriented_img:
+                            oriented_img.save(filepath, 'JPEG', quality=98, optimize=True)
+                            if oriented_img != img:
+                                oriented_img.close()
+                        else:
+                            img.save(filepath, 'JPEG', quality=98, optimize=True)
+                except Exception as e:
+                    logger.warning(f"EXIF orientation failed for image {i}: {e}")
+                    # Fallback to raw save
+                    with open(filepath, 'wb') as f:
+                        f.write(img_data)
                 
-                offset = header_end + 1
-                
-                if offset + size > len(data):
-                    raise ValueError(f"Image {i} data extends beyond bundle")
-                
-                image_data = data[offset : offset + size]
-                
-                # Use safe filename construction
-                safe_filename = f"image_{index:04d}.jpg"
-                filepath = upload_dir / safe_filename
-                
-                # Ensure the path is within upload_dir
-                if not filepath.resolve().is_relative_to(upload_dir.resolve()):
+                image_files.append(str(filepath))
+                logger.info(f"✅ Extracted image {i}: {len(img_data)} bytes")
+            
+            except Exception as e:
+                logger.error(f"Failed to extract image {i}: {e}")
+                continue
+        
+        logger.info(f"📸 Successfully extracted {len(image_files)} valid images from V2 bundle")
+        return image_files
+    
+    except Exception as e:
+        logger.error(f"Bundle extraction failed: {e}")
+        raise ValueError(f"Failed to extract bundle: {e}")
+
+# Job management
+jobs: Dict[str, Dict] = {}
+job_lock = threading.Lock()
+cleanup_timer = None  # Global cleanup timer
+
+# Job cleanup configuration
+JOB_RETENTION_HOURS = int(os.environ.get('JOB_RETENTION_HOURS', '24'))
+CLEANUP_INTERVAL_MINUTES = int(os.environ.get('CLEANUP_INTERVAL_MINUTES', '60'))
+
+def cleanup_old_jobs():
+    """Remove jobs older than retention period to prevent memory leaks."""
+    try:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=JOB_RETENTION_HOURS)
                     raise ValueError(f"Invalid file path for image {i}")
                 
                 # CRITICAL FIX: Apply EXIF orientation correction before saving while preserving EXIF data
