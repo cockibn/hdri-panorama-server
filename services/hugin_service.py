@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Callable
 import tempfile
 import json
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,48 @@ class HuginPipelineService:
             
         return 0.0
         
+    def _calculate_fov_from_exif(self, image_path: str) -> float:
+        """Calculate field of view from EXIF focal length data."""
+        try:
+            # Import piexif locally like the rest of the server code
+            import piexif
+            
+            # Read EXIF data from the image
+            exif_dict = piexif.load(image_path)
+            
+            # Look for focal length in EXIF data
+            focal_length = None
+            if "Exif" in exif_dict and piexif.ExifIFD.FocalLength in exif_dict["Exif"]:
+                focal_length_rational = exif_dict["Exif"][piexif.ExifIFD.FocalLength]
+                if isinstance(focal_length_rational, tuple) and len(focal_length_rational) == 2:
+                    focal_length = focal_length_rational[0] / focal_length_rational[1]
+                else:
+                    focal_length = float(focal_length_rational)
+            
+            if focal_length:
+                # iPhone sensor specs for FOV calculation
+                # iPhone ultra-wide: ~2.2mm focal length = ~106.2° FOV
+                # Standard calculation: FOV = 2 * atan(sensor_width / (2 * focal_length))
+                # For iPhone ultra-wide sensor: approximate sensor width = 4.3mm
+                sensor_width = 4.3  # mm (iPhone ultra-wide sensor width)
+                fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
+                fov_degrees = math.degrees(fov_radians)
+                
+                logger.info(f"📸 EXIF Focal Length: {focal_length:.2f}mm → FOV: {fov_degrees:.1f}°")
+                
+                # Sanity check: iPhone ultra-wide should be between 100-120°
+                if 95 <= fov_degrees <= 130:
+                    return fov_degrees
+                else:
+                    logger.warning(f"⚠️ Calculated FOV {fov_degrees:.1f}° outside expected range (95-130°)")
+                    
+        except Exception as e:
+            logger.warning(f"⚠️ Could not extract FOV from EXIF: {e}")
+            
+        # Fallback to iPhone ultra-wide measured FOV
+        logger.info("📸 Using measured iPhone 15 Pro ultra-wide FOV: 106.2°")
+        return 106.2
+        
     def _run_command(self, cmd: List[str], step_name: str, timeout: int = 300) -> Tuple[str, str]:
         """Execute command with logging and error handling."""
         logger.info(f"🔧 Executing {step_name}: {' '.join(cmd)}")
@@ -266,11 +309,15 @@ class HuginPipelineService:
             
             pto_file = 'project.pto'
             
-            # Step 1: Generate .pto project file with iPhone ultra-wide settings
-            logger.info("🚀 Step 1: Generating project file (iPhone ultra-wide optimized)")
+            # Calculate FOV from EXIF data instead of using hardcoded value
+            calculated_fov = self._calculate_fov_from_exif(local_images[0])
+            fov_str = str(int(round(calculated_fov)))
+            
+            # Step 1: Generate .pto project file with EXIF-based camera settings
+            logger.info(f"🚀 Step 1: Generating project file (EXIF-based FOV: {calculated_fov:.1f}°)")
             self._run_command([
                 'pto_gen', 
-                '-f', '120',           # iPhone ultra-wide: 120° horizontal FOV
+                '-f', fov_str,         # Dynamic FOV from EXIF focal length
                 '-p', '0',             # Rectilinear projection (standard lens model)
                 '-o', pto_file
             ] + local_images, "pto_gen")
