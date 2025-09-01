@@ -840,15 +840,12 @@ def process_panorama():
         f.write(bundle_data)
     logger.info(f"💾 Saved original bundle: {original_bundle_path}")
     
-    # Create enhanced bundle with session positioning data for debugging
+    # Since iOS now sends V2 bundles with metadata, just copy the original as enhanced
     enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
     try:
-        create_enhanced_bundle_with_metadata(
-            original_bundle_data=bundle_data,
-            session_metadata=session_metadata,
-            output_path=enhanced_bundle_path
-        )
-        logger.info(f"📊 Created enhanced bundle with positioning data: {enhanced_bundle_path}")
+        # iOS already sends V2 format with metadata, so original IS the enhanced bundle
+        shutil.copy2(original_bundle_path, enhanced_bundle_path)
+        logger.info(f"📊 V2 bundle already contains metadata - copied as enhanced bundle: {enhanced_bundle_path}")
     except Exception as e:
         logger.warning(f"⚠️ Could not create enhanced bundle: {e}")
         # Fall back to original bundle only
