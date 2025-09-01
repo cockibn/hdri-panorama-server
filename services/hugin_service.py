@@ -580,17 +580,15 @@ class HuginPipelineService:
             # RESEARCH-OPTIMIZED PIPELINE: iPhone ultra-wide (106.2° measured FOV) systematic 16-point pattern
             # Creates ~50-60% overlap requiring specialized enblend parameters for professional quality
             
-            # Try Method 1: Research-optimized enblend for iPhone ultra-wide (106.2° FOV)
-            logger.info("🔬 Method 1: Research-based optimal settings for ultra-wide panorama")
+            # Try Method 1: Railway-compatible optimal settings for ultra-wide panorama
+            logger.info("🔬 Method 1: Railway-compatible optimal settings for ultra-wide panorama")
             result = subprocess.run([
                 'enblend', 
                 '--fine-mask',           # RESEARCH: Best with graph-cut for detailed seam placement
                 '-l', '20',              # RESEARCH: Higher levels for smoother high-overlap transitions
-                '-m', '2048',            # RESEARCH: Increased memory cache for server performance
                 '--compression=lzw',     # Maintain compression for storage efficiency
                 # NOTE: graph-cut is DEFAULT (superior to nearest-feature-transform)
-                # NOTE: Removed feather width - research shows it's detrimental to enblend
-                '--blend-colorspace=CIELUV',  # RESEARCH: Better for ICC profile images
+                # NOTE: Removed incompatible options: -m, --blend-colorspace for Railway compatibility
                 '-o', 'stitched.tif'
             ] + img_files, capture_output=True, text=True, timeout=900, env=env)
             
@@ -611,15 +609,14 @@ class HuginPipelineService:
                 logger.warning(f"Method 1 failed: {result.stderr}")
                 
             # Method 2: Performance-optimized for challenging overlap scenarios  
-            logger.info("🔄 Method 2: Performance-optimized enblend for excessive overlap")
+            logger.info("🔄 Method 2: Railway-compatible performance-optimized enblend")
             result = subprocess.run([
                 'enblend',
                 '--coarse-mask',         # RESEARCH: Faster processing for excessive overlap
                 '-l', '15',              # RESEARCH: Moderate levels for speed vs quality balance
-                '-m', '1536',            # Reduced memory cache for stability
-                '--compression=lzw',
+                '--compression=lzw',     # Maintain compression
                 # NOTE: Still using superior graph-cut algorithm (default)
-                '--blend-colorspace=CIELUV',  # Consistent color processing
+                # NOTE: Removed incompatible options: -m, --blend-colorspace for Railway compatibility
                 '-o', 'stitched.tif'
             ] + img_files, capture_output=True, text=True, timeout=600, env=env)
             
@@ -671,6 +668,10 @@ class HuginPipelineService:
                 img = cv2.imread(img_file, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
                 if img is None:
                     continue
+                
+                # Ensure image dimensions match target
+                if img.shape[:2] != (height, width):
+                    img = cv2.resize(img, (width, height))
                     
                 # Convert to float64 for accumulation
                 img_float = img.astype(np.float64)
@@ -684,10 +685,14 @@ class HuginPipelineService:
                 
                 logger.info(f"📊 Processed image {i+1}/{len(img_files)}: {img_file}")
             
-            # Average the accumulated values
-            mask = count > 0
+            # Average the accumulated values with proper dimension handling
+            valid_mask = count > 0
             result = np.zeros_like(accumulated)
-            result[mask] = accumulated[mask] / count[mask, np.newaxis]
+            
+            # Safe division with broadcasting
+            for c in range(3):  # For each color channel
+                channel_mask = valid_mask
+                result[channel_mask, c] = accumulated[channel_mask, c] / count[channel_mask]
             
             # Convert back to appropriate data type and save
             if first_img.dtype == np.uint8:
