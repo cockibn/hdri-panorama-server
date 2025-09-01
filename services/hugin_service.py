@@ -265,17 +265,39 @@ class HuginPipelineService:
                     logger.warning(f"⚠️ EXIF-calculated FOV {fov_degrees:.1f}° outside expected range (95-135°)")
             
             elif focal_length:
-                # Fallback to research-based iPhone ultra-wide sensor width
-                sensor_width = 4.88  # mm (research-based iPhone ultra-wide sensor width)
-                fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
-                fov_degrees = math.degrees(fov_radians)
+                # Try to calculate sensor width from 35mm equivalent focal length
+                focal_35mm = None
+                if "Exif" in exif_dict and piexif.ExifIFD.FocalLengthIn35mmFilm in exif_dict["Exif"]:
+                    focal_35mm = exif_dict["Exif"][piexif.ExifIFD.FocalLengthIn35mmFilm]
                 
-                logger.info(f"📸 Research-based FOV: {focal_length:.2f}mm focal length + {sensor_width:.2f}mm sensor → {fov_degrees:.1f}°")
-                
-                if 95 <= fov_degrees <= 135:
-                    return fov_degrees
+                if focal_35mm and focal_35mm > 0:
+                    # Calculate sensor width using 35mm equivalent method
+                    # crop_factor = focal_35mm / focal_length
+                    # sensor_width = full_frame_width / crop_factor
+                    crop_factor = focal_35mm / focal_length
+                    sensor_width = 36.0 / crop_factor  # 36mm = full frame sensor width
+                    
+                    fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
+                    fov_degrees = math.degrees(fov_radians)
+                    
+                    logger.info(f"📸 35mm-equivalent FOV: {focal_length:.2f}mm focal + {focal_35mm}mm equiv → {sensor_width:.2f}mm sensor → {fov_degrees:.1f}°")
+                    
+                    if 95 <= fov_degrees <= 135:
+                        return fov_degrees
+                    else:
+                        logger.warning(f"⚠️ 35mm-calculated FOV {fov_degrees:.1f}° outside expected range (95-135°)")
                 else:
-                    logger.warning(f"⚠️ Research-calculated FOV {fov_degrees:.1f}° outside expected range")
+                    # Fallback to research-based iPhone ultra-wide sensor width
+                    sensor_width = 4.88  # mm (research-based iPhone ultra-wide sensor width)
+                    fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
+                    fov_degrees = math.degrees(fov_radians)
+                    
+                    logger.info(f"📸 Research-based FOV: {focal_length:.2f}mm focal length + {sensor_width:.2f}mm sensor → {fov_degrees:.1f}°")
+                    
+                    if 95 <= fov_degrees <= 135:
+                        return fov_degrees
+                    else:
+                        logger.warning(f"⚠️ Research-calculated FOV {fov_degrees:.1f}° outside expected range")
                     
         except Exception as e:
             logger.warning(f"⚠️ Could not extract FOV from EXIF: {e}")
