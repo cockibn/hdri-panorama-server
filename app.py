@@ -197,13 +197,28 @@ def extract_bundle_images(bundle_file, upload_dir):
         # Extract image data (all images concatenated as JPEGs)
         image_data = remaining_data[images_start + len(images_marker):]
         
-        # Find all JPEG markers and extract images
+        # Parse concatenated JPEGs properly - avoid false positives from embedded data
         jpeg_starts = []
-        for i in range(len(image_data) - 1):
-            if image_data[i:i+2] == b'\xff\xd8':  # JPEG SOI marker
+        i = 0
+        while i < len(image_data) - 1:
+            # Look for JPEG SOI marker at current position
+            if image_data[i:i+2] == b'\xff\xd8':
                 jpeg_starts.append(i)
+                
+                # Find the end of this JPEG by looking for EOI marker
+                j = i + 2
+                while j < len(image_data) - 1:
+                    if image_data[j:j+2] == b'\xff\xd9':  # JPEG EOI marker
+                        i = j + 2  # Move past this JPEG
+                        break
+                    j += 1
+                else:
+                    # No EOI found, assume this JPEG goes to end or next SOI
+                    break
+            else:
+                i += 1
         
-        logger.info(f"Found {len(jpeg_starts)} JPEG images in bundle")
+        logger.info(f"Found {len(jpeg_starts)} properly parsed JPEG images in bundle")
         
         # Extract all valid images - iOS now only sends valid full-resolution images
         extracted_count = 0
