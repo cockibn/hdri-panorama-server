@@ -213,22 +213,40 @@ def extract_bundle_images(bundle_file, upload_dir):
                 if not filepath.resolve().is_relative_to(upload_dir.resolve()):
                     raise ValueError(f"Invalid file path for image {i}")
                 
-                # CRITICAL FIX: Apply EXIF orientation correction before saving
+                # CRITICAL FIX: Apply EXIF orientation correction before saving while preserving EXIF data
                 try:
                     from PIL import Image, ImageOps
                     import io
+                    import piexif
                     
                     # Load image data and apply EXIF orientation with proper cleanup
                     with Image.open(io.BytesIO(image_data)) as temp_image:
                         original_size = temp_image.size
                         
+                        # Extract EXIF data BEFORE orientation correction
+                        original_exif = None
+                        try:
+                            original_exif = piexif.load(image_data)
+                            # Remove orientation tag since we're correcting it
+                            if "0th" in original_exif and piexif.ImageIFD.Orientation in original_exif["0th"]:
+                                original_exif["0th"][piexif.ImageIFD.Orientation] = 1  # Set to normal orientation
+                        except Exception as exif_err:
+                            logger.warning(f"⚠️ Could not extract EXIF for preservation: {exif_err}")
+                            original_exif = None
+                        
                         # Apply EXIF orientation correction
                         oriented_image = ImageOps.exif_transpose(temp_image)
                         corrected_size = oriented_image.size
                         
-                        # Save orientation-corrected image (high quality to minimize loss)
+                        # Save orientation-corrected image with preserved EXIF data
                         try:
-                            oriented_image.save(filepath, 'JPEG', quality=98, optimize=True)
+                            if original_exif:
+                                exif_bytes = piexif.dump(original_exif)
+                                oriented_image.save(filepath, 'JPEG', quality=98, optimize=True, exif=exif_bytes)
+                                logger.debug(f"📸 Image {index}: Saved with preserved EXIF metadata")
+                            else:
+                                oriented_image.save(filepath, 'JPEG', quality=98, optimize=True)
+                                logger.debug(f"📸 Image {index}: Saved without EXIF (extraction failed)")
                         finally:
                             # Ensure oriented_image is cleaned up
                             if oriented_image != temp_image:  # Only close if it's a new image
