@@ -196,7 +196,7 @@ class HuginPipelineService:
         return 0.0
         
     def _calculate_fov_from_exif(self, image_path: str) -> float:
-        """Calculate field of view from EXIF focal length data."""
+        """Calculate field of view from EXIF focal length and sensor data."""
         try:
             # Import piexif locally like the rest of the server code
             import piexif
@@ -204,7 +204,7 @@ class HuginPipelineService:
             # Read EXIF data from the image
             exif_dict = piexif.load(image_path)
             
-            # Look for focal length in EXIF data
+            # Extract focal length
             focal_length = None
             if "Exif" in exif_dict and piexif.ExifIFD.FocalLength in exif_dict["Exif"]:
                 focal_length_rational = exif_dict["Exif"][piexif.ExifIFD.FocalLength]
@@ -213,29 +213,128 @@ class HuginPipelineService:
                 else:
                     focal_length = float(focal_length_rational)
             
-            if focal_length:
-                # iPhone sensor specs for FOV calculation
-                # iPhone ultra-wide: ~2.2mm focal length = ~106.2° FOV
-                # Standard calculation: FOV = 2 * atan(sensor_width / (2 * focal_length))
-                # For iPhone ultra-wide sensor: approximate sensor width = 4.3mm
-                sensor_width = 4.3  # mm (iPhone ultra-wide sensor width)
+            # Extract sensor dimensions from EXIF if available
+            sensor_width = None
+            sensor_height = None
+            
+            # Check for focal plane resolution (pixels per unit)
+            if "Exif" in exif_dict:
+                exif_data = exif_dict["Exif"]
+                
+                # Get sensor resolution and focal plane dimensions
+                focal_plane_x_res = exif_data.get(piexif.ExifIFD.FocalPlaneXResolution)
+                focal_plane_y_res = exif_data.get(piexif.ExifIFD.FocalPlaneYResolution)
+                focal_plane_unit = exif_data.get(piexif.ExifIFD.FocalPlaneResolutionUnit, 2)  # 2 = inches
+                
+                if focal_plane_x_res and focal_plane_y_res:
+                    # Convert resolution to sensor dimensions
+                    if isinstance(focal_plane_x_res, tuple):
+                        x_res = focal_plane_x_res[0] / focal_plane_x_res[1]
+                    else:
+                        x_res = float(focal_plane_x_res)
+                        
+                    if isinstance(focal_plane_y_res, tuple):
+                        y_res = focal_plane_y_res[0] / focal_plane_y_res[1]
+                    else:
+                        y_res = float(focal_plane_y_res)
+                    
+                    # Get image dimensions
+                    if "0th" in exif_dict:
+                        img_width = exif_dict["0th"].get(piexif.ImageIFD.ImageWidth)
+                        img_height = exif_dict["0th"].get(piexif.ImageIFD.ImageLength)
+                        
+                        if img_width and img_height and x_res > 0 and y_res > 0:
+                            # Calculate sensor dimensions in mm
+                            unit_factor = 25.4 if focal_plane_unit == 2 else 1.0  # Convert inches to mm
+                            sensor_width = (img_width / x_res) * unit_factor
+                            sensor_height = (img_height / y_res) * unit_factor
+                            
+                            logger.info(f"📸 EXIF Sensor Dimensions: {sensor_width:.2f}mm × {sensor_height:.2f}mm")
+            
+            if focal_length and sensor_width:
+                # Use EXIF-derived sensor width for accurate FOV calculation
                 fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
                 fov_degrees = math.degrees(fov_radians)
                 
-                logger.info(f"📸 EXIF Focal Length: {focal_length:.2f}mm → FOV: {fov_degrees:.1f}°")
+                logger.info(f"📸 EXIF-based FOV: {focal_length:.2f}mm focal length + {sensor_width:.2f}mm sensor → {fov_degrees:.1f}°")
                 
-                # Sanity check: iPhone ultra-wide should be between 100-120°
-                if 95 <= fov_degrees <= 130:
+                # Sanity check: iPhone ultra-wide should be between 100-130°
+                if 95 <= fov_degrees <= 135:
                     return fov_degrees
                 else:
-                    logger.warning(f"⚠️ Calculated FOV {fov_degrees:.1f}° outside expected range (95-130°)")
+                    logger.warning(f"⚠️ EXIF-calculated FOV {fov_degrees:.1f}° outside expected range (95-135°)")
+            
+            elif focal_length:
+                # Fallback to research-based iPhone ultra-wide sensor width
+                sensor_width = 4.88  # mm (research-based iPhone ultra-wide sensor width)
+                fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
+                fov_degrees = math.degrees(fov_radians)
+                
+                logger.info(f"📸 Research-based FOV: {focal_length:.2f}mm focal length + {sensor_width:.2f}mm sensor → {fov_degrees:.1f}°")
+                
+                if 95 <= fov_degrees <= 135:
+                    return fov_degrees
+                else:
+                    logger.warning(f"⚠️ Research-calculated FOV {fov_degrees:.1f}° outside expected range")
                     
         except Exception as e:
             logger.warning(f"⚠️ Could not extract FOV from EXIF: {e}")
             
-        # Fallback to iPhone ultra-wide measured FOV
-        logger.info("📸 Using measured iPhone 15 Pro ultra-wide FOV: 106.2°")
+        # Final fallback to measured iPhone ultra-wide FOV
+        logger.info("📸 Using measured iPhone ultra-wide FOV: 106.2°")
         return 106.2
+    
+    def _extract_photometric_exif(self, image_path: str) -> Dict:
+        """Extract photometric parameters from EXIF for enhanced optimization."""
+        photometric_data = {}
+        
+        try:
+            import piexif
+            exif_dict = piexif.load(image_path)
+            
+            if "Exif" in exif_dict:
+                exif_data = exif_dict["Exif"]
+                
+                # ISO speed
+                if piexif.ExifIFD.ISOSpeedRatings in exif_data:
+                    photometric_data['iso'] = exif_data[piexif.ExifIFD.ISOSpeedRatings]
+                
+                # Aperture (F-number)
+                if piexif.ExifIFD.FNumber in exif_data:
+                    f_number = exif_data[piexif.ExifIFD.FNumber]
+                    if isinstance(f_number, tuple) and len(f_number) == 2:
+                        photometric_data['aperture'] = f_number[0] / f_number[1]
+                    else:
+                        photometric_data['aperture'] = float(f_number)
+                
+                # Exposure time
+                if piexif.ExifIFD.ExposureTime in exif_data:
+                    exp_time = exif_data[piexif.ExifIFD.ExposureTime]
+                    if isinstance(exp_time, tuple) and len(exp_time) == 2:
+                        photometric_data['exposure_time'] = exp_time[0] / exp_time[1]
+                    else:
+                        photometric_data['exposure_time'] = float(exp_time)
+                
+                # White balance
+                if piexif.ExifIFD.WhiteBalance in exif_data:
+                    photometric_data['white_balance'] = exif_data[piexif.ExifIFD.WhiteBalance]
+                
+                # Exposure compensation
+                if piexif.ExifIFD.ExposureBiasValue in exif_data:
+                    exp_bias = exif_data[piexif.ExifIFD.ExposureBiasValue]
+                    if isinstance(exp_bias, tuple) and len(exp_bias) == 2:
+                        photometric_data['exposure_bias'] = exp_bias[0] / exp_bias[1]
+                
+            # Log photometric data found
+            if photometric_data:
+                logger.info(f"📊 EXIF Photometric Data: {photometric_data}")
+            else:
+                logger.info("📊 No photometric EXIF data found")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Could not extract photometric EXIF: {e}")
+            
+        return photometric_data
         
     def _run_command(self, cmd: List[str], step_name: str, timeout: int = 300) -> Tuple[str, str]:
         """Execute command with logging and error handling."""
@@ -309,9 +408,12 @@ class HuginPipelineService:
             
             pto_file = 'project.pto'
             
-            # Calculate FOV from EXIF data instead of using hardcoded value
+            # Calculate FOV from EXIF data with enhanced sensor dimension extraction
             calculated_fov = self._calculate_fov_from_exif(local_images[0])
             fov_str = str(int(round(calculated_fov)))
+            
+            # Extract photometric data from first image for logging (helps with debugging)
+            photometric_data = self._extract_photometric_exif(local_images[0])
             
             # Step 1: Generate .pto project file with EXIF-based camera settings
             logger.info(f"🚀 Step 1: Generating project file (EXIF-based FOV: {calculated_fov:.1f}°)")
