@@ -766,6 +766,21 @@ class MicroservicesPanoramaProcessor:
                 processing_time = time.time() - start_time
                 logger.info(f"✅ Panorama processing completed in {processing_time:.1f}s: {output_size_mb:.1f}MB")
                 
+                # Create EXR version for high-quality download
+                logger.info("🌈 Creating HDR EXR version...")
+                exr_output_path = os.path.join(OUTPUT_DIR, f"{job_id}_panorama.exr")
+                try:
+                    # Read the panorama as float32 for EXR conversion
+                    panorama_float = cv2.imread(final_output_path).astype(np.float32) / 255.0
+                    success = cv2.imwrite(exr_output_path, panorama_float, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+                    if success:
+                        exr_size_mb = os.path.getsize(exr_output_path) / (1024 * 1024)
+                        logger.info(f"✅ EXR created: {exr_size_mb:.1f}MB")
+                    else:
+                        logger.warning("⚠️ Failed to create EXR version")
+                except Exception as e:
+                    logger.error(f"❌ EXR creation failed: {e}")
+                
                 # Create preview with photosphere metadata
                 logger.info("🖼️ Creating panorama preview with photosphere metadata...")
                 preview_path = os.path.join(OUTPUT_DIR, f"{job_id}_preview.jpg")
@@ -1102,7 +1117,6 @@ def get_job_status(job_id: str):
     return jsonify(enhanced_job)
 
 @app.route('/v1/panorama/original/<job_id>', methods=['GET'])
-@require_api_key
 def download_original_bundle(job_id: str):
     """Download original HDR bundle with all bracket images and metadata"""
     # SECURITY: Validate job ID
