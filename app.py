@@ -46,6 +46,16 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
+# Health check endpoint (no auth required)
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "service": "HDRi 360 Studio Panorama Server",
+        "version": "1.0.0",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
 # Configure rate limiting
 limiter = Limiter(
     app=app,
