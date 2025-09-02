@@ -1059,6 +1059,9 @@ def process_panorama():
     request_base_url = os.environ.get('BASE_URL')
     if not request_base_url:
         request_base_url = request.host_url.rstrip('/')
+        # Force HTTPS for Railway deployment
+        if 'railway.app' in request_base_url:
+            request_base_url = request_base_url.replace('http://', 'https://')
     else:
         request_base_url = request_base_url.rstrip('/')
     
