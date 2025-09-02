@@ -430,12 +430,51 @@ class HuginPipelineService:
             
             pto_file = 'project.pto'
             
+            # **HDR WORKFLOW FIX**: Extract EXIF from corresponding JPG if using HDR TIFF
+            first_image = local_images[0]
+            exif_source_image = first_image
+            
+            # Check if we're processing HDR TIFF files (which lack EXIF)
+            if first_image.endswith('_hdr.tif'):
+                # HDR TIFFs are in hdr_merged/ subdirectory, originals are in parent directory
+                tiff_dir = os.path.dirname(first_image)
+                parent_dir = os.path.dirname(tiff_dir)  # Go up from hdr_merged/ to upload dir
+                
+                # Method 1: Look for corresponding numbered JPG in parent directory
+                tiff_basename = os.path.basename(first_image)  # e.g., "merged_dot_0_hdr.tif"
+                if 'merged_dot_' in tiff_basename:
+                    # Extract dot number: merged_dot_0_hdr.tif -> 0
+                    dot_num = tiff_basename.split('merged_dot_')[1].split('_hdr.tif')[0]
+                    potential_jpgs = [
+                        f"img_{dot_num:02d}.jpg",    # img_00.jpg format
+                        f"image_{dot_num}.jpg",      # image_0.jpg format  
+                        f"dot_{dot_num}.jpg"         # dot_0.jpg format
+                    ]
+                    
+                    for jpg_name in potential_jpgs:
+                        jpg_path = os.path.join(parent_dir, jpg_name)
+                        if os.path.exists(jpg_path):
+                            exif_source_image = jpg_path
+                            logger.info(f"🔧 HDR Mode: Found {jpg_name} for EXIF (dot {dot_num})")
+                            break
+                
+                # Method 2: If specific JPG not found, use any JPG in parent directory 
+                if exif_source_image == first_image:  # Still using TIFF (no JPG found)
+                    jpg_files = [f for f in os.listdir(parent_dir) if f.endswith('.jpg')]
+                    if jpg_files:
+                        # Sort to get consistent results
+                        jpg_files.sort()
+                        exif_source_image = os.path.join(parent_dir, jpg_files[0])
+                        logger.info(f"🔧 HDR Mode: Using {jpg_files[0]} from parent dir for EXIF")
+                    else:
+                        logger.warning("⚠️ HDR Mode: No JPG found for EXIF - using fallback FOV")
+            
             # Calculate FOV from EXIF data with enhanced sensor dimension extraction
-            calculated_fov = self._calculate_fov_from_exif(local_images[0])
+            calculated_fov = self._calculate_fov_from_exif(exif_source_image)
             fov_str = str(int(round(calculated_fov)))
             
-            # Extract photometric data from first image for logging (helps with debugging)
-            photometric_data = self._extract_photometric_exif(local_images[0])
+            # Extract photometric data from EXIF source for logging (helps with debugging)
+            photometric_data = self._extract_photometric_exif(exif_source_image)
             
             # Step 1: Generate .pto project file with EXIF-based camera settings
             logger.info(f"🚀 Step 1: Generating project file (EXIF-based FOV: {calculated_fov:.1f}°)")
