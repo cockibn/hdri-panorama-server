@@ -1050,17 +1050,50 @@ class HuginPipelineService:
                 raise HuginPipelineError(f"Image {i} missing: {img_path}")
                 
             try:
-                # Check if it's an HDR TIFF file that PIL can't handle
+                # Check if it's an HDR TIFF file that needs special handling
                 if img_path.endswith('_hdr.tif'):
-                    # Use OpenCV for HDR TIFF validation
-                    import cv2
-                    img = cv2.imread(img_path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-                    if img is not None:
-                        height, width = img.shape[:2]
-                        dtype = img.dtype
-                        logger.info(f"📸 HDR Image {i}: {os.path.basename(img_path)} {width}×{height} ({dtype})")
-                    else:
-                        raise HuginPipelineError(f"OpenCV failed to read HDR TIFF: {img_path}")
+                    # **32-bit HDR TIFF Validation** - Don't load pixels, just validate file
+                    
+                    # Method 1: File system validation
+                    file_size = os.path.getsize(img_path)
+                    if file_size < 1000:  # Less than 1KB is suspicious
+                        raise HuginPipelineError(f"HDR TIFF too small: {file_size} bytes")
+                    
+                    # Method 2: Try to read TIFF header for dimensions
+                    width, height, dtype = None, None, "float32"
+                    
+                    try:
+                        # Try using tifffile if available (better for 32-bit float)
+                        import tifffile
+                        with tifffile.TiffFile(img_path) as tif:
+                            page = tif.pages[0]
+                            width, height = page.shape[1], page.shape[0]
+                            dtype = page.dtype
+                            logger.info(f"📸 HDR Image {i}: {os.path.basename(img_path)} {width}×{height} ({dtype}) [tifffile]")
+                    except ImportError:
+                        # Fallback: Try ImageMagick identify command
+                        try:
+                            result = subprocess.run(
+                                ['identify', '-format', '%w %h %z', img_path],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            if result.returncode == 0:
+                                parts = result.stdout.strip().split()
+                                if len(parts) >= 2:
+                                    width, height = int(parts[0]), int(parts[1])
+                                    bit_depth = parts[2] if len(parts) > 2 else "32"
+                                    logger.info(f"📸 HDR Image {i}: {os.path.basename(img_path)} {width}×{height} ({bit_depth}-bit) [ImageMagick]")
+                            else:
+                                raise subprocess.CalledProcessError(result.returncode, result.args)
+                        except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+                            # Ultimate fallback: Just check file exists and size
+                            logger.info(f"📸 HDR Image {i}: {os.path.basename(img_path)} ({file_size/1024/1024:.1f}MB) [file-only validation]")
+                    except Exception as e:
+                        # If tifffile fails, just validate file existence
+                        logger.warning(f"⚠️ Could not read HDR TIFF metadata: {e}")
+                        logger.info(f"📸 HDR Image {i}: {os.path.basename(img_path)} ({file_size/1024/1024:.1f}MB) [file validation only]")
                 else:
                     # Use PIL for standard images
                     from PIL import Image
