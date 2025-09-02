@@ -76,13 +76,245 @@ def validate_job_id(job_id: str) -> bool:
 
 def validate_bundle_format(bundle_data):
     """Validate bundle data format and prevent malicious content."""
-    if not bundle_data.startswith(b"HDRI_BUNDLE_V2_WITH_METADATA\n"):
-        raise ValueError("Invalid bundle format header - expecting HDRI_BUNDLE_V2_WITH_METADATA")
     
+    # Check size limit first
     if len(bundle_data) > 500 * 1024 * 1024:  # 500MB limit
         raise ValueError("Bundle exceeds maximum size limit")
     
-    return True
+    # Support both V2 and V3 HDR bundle formats
+    if bundle_data.startswith(b"HDRI_BUNDLE_V3_WITH_HDR_BRACKETS\n"):
+        logger.info("🌈 Processing V3 HDR bundle with bracket support")
+        return "V3_HDR"
+    elif bundle_data.startswith(b"HDRI_BUNDLE_V2_WITH_METADATA\n"):
+        logger.info("📸 Processing V2 bundle with single images")
+        return "V2"
+    else:
+        raise ValueError("Invalid bundle format header - expecting HDRI_BUNDLE_V2_WITH_METADATA or HDRI_BUNDLE_V3_WITH_HDR_BRACKETS")
+
+def parse_hdr_bundle_v3(bundle_data):
+    """
+    Parse V3 HDR bundle format with bracket support.
+    
+    V3 Format:
+    HDRI_BUNDLE_V3_WITH_HDR_BRACKETS
+    SESSION_METADATA:{json_length}
+    {session_json_data}
+    ORIGINAL_IMAGES:
+    BRACKET_{dot}_{bracket}_EV{exposure}:{size}
+    {image_data}
+    ...
+    
+    Returns:
+    - session_metadata: dict with session info
+    - hdr_brackets: dict with structure {dot_index: [{exposure: float, data: bytes}, ...]}
+    """
+    logger.info("🌈 Parsing V3 HDR bundle...")
+    
+    try:
+        bundle_str = bundle_data.decode('utf-8', errors='ignore')
+    except UnicodeDecodeError:
+        # Handle binary data - extract text portions only
+        bundle_str = bundle_data[:10000].decode('utf-8', errors='ignore')
+    
+    lines = bundle_str.split('\n')
+    
+    # Parse session metadata
+    session_metadata = {}
+    hdr_brackets = {}
+    current_pos = 0
+    
+    # Skip header
+    if lines[0] != "HDRI_BUNDLE_V3_WITH_HDR_BRACKETS":
+        raise ValueError("Invalid V3 HDR bundle header")
+    current_pos += len(lines[0]) + 1
+    
+    # Find SESSION_METADATA section
+    for i, line in enumerate(lines[1:], 1):
+        if line.startswith("SESSION_METADATA:"):
+            metadata_size = int(line.split(':')[1])
+            
+            # Calculate position more carefully
+            header_end = bundle_data.find(f"SESSION_METADATA:{metadata_size}\n".encode('utf-8'))
+            if header_end == -1:
+                raise ValueError("Cannot find SESSION_METADATA header")
+            
+            metadata_start = header_end + len(f"SESSION_METADATA:{metadata_size}\n")
+            metadata_bytes = bundle_data[metadata_start:metadata_start + metadata_size]
+            
+            session_metadata = json.loads(metadata_bytes.decode('utf-8'))
+            current_pos = metadata_start + metadata_size
+            break
+    
+    # Find ORIGINAL_IMAGES section
+    remaining_data = bundle_data[current_pos:]
+    remaining_str = remaining_data.decode('utf-8', errors='ignore')
+    
+    if "ORIGINAL_IMAGES:" in remaining_str:
+        images_start = remaining_data.find(b"ORIGINAL_IMAGES:") + len(b"ORIGINAL_IMAGES:\n")
+        image_data = remaining_data[images_start:]
+    else:
+        image_data = remaining_data
+    
+    # Parse HDR bracket images
+    data_pos = 0
+    bracket_count = 0
+    
+    while data_pos < len(image_data):
+        # Look for bracket header pattern
+        remaining = image_data[data_pos:]
+        text_portion = remaining[:200].decode('utf-8', errors='ignore')
+        
+        if text_portion.startswith('BRACKET_'):
+            # Parse bracket header: BRACKET_0_0_EV-1.0:1028
+            header_end = text_portion.find('\n')
+            if header_end == -1:
+                break
+                
+            header = text_portion[:header_end]
+            parts = header.split('_')
+            
+            if len(parts) >= 4:
+                try:
+                    dot_index = int(parts[1])
+                    bracket_index = int(parts[2])
+                    
+                    # Extract EV and size
+                    ev_size_part = parts[3]  # "EV-1.0:1028"
+                    ev_part, size_part = ev_size_part.split(':')
+                    exposure = float(ev_part.replace('EV', ''))
+                    image_size = int(size_part)
+                    
+                    # Extract image data
+                    header_bytes = len(header) + 1  # +1 for newline
+                    image_bytes = remaining[header_bytes:header_bytes + image_size]
+                    
+                    # Store bracket data
+                    if dot_index not in hdr_brackets:
+                        hdr_brackets[dot_index] = []
+                    
+                    hdr_brackets[dot_index].append({
+                        'bracket_index': bracket_index,
+                        'exposure': exposure,
+                        'data': image_bytes,
+                        'size': image_size
+                    })
+                    
+                    bracket_count += 1
+                    data_pos += header_bytes + image_size
+                    
+                    if bracket_count % 10 == 0:
+                        logger.info(f"📸 Parsed {bracket_count} HDR brackets...")
+                        
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"⚠️ Failed to parse bracket header '{header}': {e}")
+                    data_pos += header_end + 1
+            else:
+                data_pos += header_end + 1
+        else:
+            # No more bracket headers found
+            break
+    
+    # Sort brackets by bracket_index within each dot
+    for dot_index in hdr_brackets:
+        hdr_brackets[dot_index].sort(key=lambda x: x['bracket_index'])
+    
+    logger.info(f"✅ Parsed V3 HDR bundle: {len(hdr_brackets)} dots, {bracket_count} total brackets")
+    
+    return session_metadata, hdr_brackets
+
+def merge_hdr_brackets(hdr_brackets, output_dir):
+    """
+    Merge HDR brackets for each capture point using OpenCV HDR processing.
+    
+    Args:
+        hdr_brackets: dict with structure {dot_index: [{exposure: float, data: bytes}, ...]}
+        output_dir: directory to save merged HDR images
+    
+    Returns:
+        merged_images: dict with structure {dot_index: merged_image_path}
+    """
+    logger.info("🌈 Starting HDR bracket merging...")
+    
+    merged_images = {}
+    
+    for dot_index, brackets in hdr_brackets.items():
+        if len(brackets) < 2:
+            # Not enough brackets for HDR - use single image
+            logger.warning(f"⚠️ Dot {dot_index}: Only {len(brackets)} brackets, skipping HDR merge")
+            if brackets:
+                # Save single image
+                single_image_path = os.path.join(output_dir, f"merged_dot_{dot_index}.jpg")
+                with open(single_image_path, 'wb') as f:
+                    f.write(brackets[0]['data'])
+                merged_images[dot_index] = single_image_path
+            continue
+        
+        try:
+            # Load bracket images into OpenCV format
+            cv_images = []
+            exposures = []
+            
+            for bracket in brackets:
+                # Convert bytes to numpy array
+                nparr = np.frombuffer(bracket['data'], np.uint8)
+                cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if cv_img is not None:
+                    cv_images.append(cv_img)
+                    # Convert exposure bias to exposure time (assuming base shutter speed of 1/60s)
+                    exposure_time = (1.0 / 60.0) * (2.0 ** bracket['exposure'])
+                    exposures.append(exposure_time)
+                    logger.info(f"📸 Dot {dot_index}: Loaded bracket EV={bracket['exposure']}, exposure_time={exposure_time:.6f}s")
+                else:
+                    logger.warning(f"⚠️ Dot {dot_index}: Failed to decode bracket EV={bracket['exposure']}")
+            
+            if len(cv_images) < 2:
+                logger.warning(f"⚠️ Dot {dot_index}: Only {len(cv_images)} valid images after loading, skipping HDR merge")
+                continue
+            
+            # Create HDR merge object
+            merge_debevec = cv2.createMergeDebevec()
+            
+            # Convert to numpy arrays
+            exposures_np = np.array(exposures, dtype=np.float32)
+            
+            logger.info(f"🌈 Dot {dot_index}: Merging {len(cv_images)} brackets with exposures {exposures}")
+            
+            # Merge HDR
+            hdr_image = merge_debevec.process(cv_images, exposures_np)
+            
+            # Tone mapping for display/saving
+            tonemap = cv2.createTonemapDrago(gamma=1.0, saturation=1.0, bias=0.85)
+            ldr_image = tonemap.process(hdr_image)
+            
+            # Convert to 8-bit
+            ldr_image = np.clip(ldr_image * 255, 0, 255).astype(np.uint8)
+            
+            # Save merged image
+            merged_image_path = os.path.join(output_dir, f"merged_dot_{dot_index}.jpg")
+            success = cv2.imwrite(merged_image_path, ldr_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            
+            if success:
+                merged_images[dot_index] = merged_image_path
+                logger.info(f"✅ Dot {dot_index}: HDR merge completed, saved to {merged_image_path}")
+            else:
+                logger.error(f"❌ Dot {dot_index}: Failed to save merged HDR image")
+                
+        except Exception as e:
+            logger.error(f"❌ Dot {dot_index}: HDR merge failed - {str(e)}")
+            # Fallback to middle exposure bracket
+            try:
+                middle_bracket = brackets[len(brackets) // 2]
+                fallback_path = os.path.join(output_dir, f"merged_dot_{dot_index}.jpg")
+                with open(fallback_path, 'wb') as f:
+                    f.write(middle_bracket['data'])
+                merged_images[dot_index] = fallback_path
+                logger.info(f"📸 Dot {dot_index}: Used fallback middle exposure (EV={middle_bracket['exposure']})")
+            except Exception as fallback_error:
+                logger.error(f"❌ Dot {dot_index}: Fallback also failed - {str(fallback_error)}")
+    
+    logger.info(f"✅ HDR merging complete: {len(merged_images)}/{len(hdr_brackets)} dots processed")
+    return merged_images
 
 def create_enhanced_bundle_with_metadata(original_bundle_data: bytes, session_metadata: dict, output_path):
     """
@@ -736,20 +968,63 @@ def process_panorama():
         f.write(bundle_data)
     logger.info(f"💾 Saved original bundle: {original_bundle_path}")
     
-    # Since iOS now sends V2 bundles with metadata, just copy the original as enhanced
-    enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
+    # Validate and determine bundle format
     try:
-        # iOS already sends V2 format with metadata, so original IS the enhanced bundle
-        shutil.copy2(original_bundle_path, enhanced_bundle_path)
-        logger.info(f"📊 V2 bundle already contains metadata - copied as enhanced bundle: {enhanced_bundle_path}")
-    except Exception as e:
-        logger.warning(f"⚠️ Could not create enhanced bundle: {e}")
-        # Fall back to original bundle only
+        bundle_format = validate_bundle_format(bundle_data)
+    except ValueError as e:
+        logger.error(f"❌ Bundle validation failed: {e}")
+        return jsonify({"error": "Invalid bundle format", "details": str(e)}), 400
     
-    # Reset file pointer for extraction
-    bundle_file.seek(0)
-    image_files = extract_bundle_images(bundle_file, upload_dir)
-    logger.info(f"Extracted {len(image_files)} images from bundle")
+    # Handle HDR vs standard processing
+    image_files = []
+    hdr_merge_dir = None
+    
+    if bundle_format == "V3_HDR":
+        logger.info("🌈 Processing V3 HDR bundle with bracket merging")
+        
+        try:
+            # Parse HDR bundle
+            hdr_metadata, hdr_brackets = parse_hdr_bundle_v3(bundle_data)
+            logger.info(f"📊 HDR Bundle contains {len(hdr_brackets)} dots with brackets")
+            
+            # Create directory for HDR merge results
+            hdr_merge_dir = upload_dir / 'hdr_merged'
+            hdr_merge_dir.mkdir()
+            
+            # Merge HDR brackets for each capture point
+            merged_images = merge_hdr_brackets(hdr_brackets, str(hdr_merge_dir))
+            
+            # Create image file list from merged results (sorted by dot index)
+            image_files = []
+            for dot_index in sorted(merged_images.keys()):
+                image_files.append(merged_images[dot_index])
+            
+            logger.info(f"✅ HDR processing complete: {len(image_files)} merged images ready for stitching")
+            
+            # Create enhanced bundle with HDR info
+            enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
+            shutil.copy2(original_bundle_path, enhanced_bundle_path)
+            
+        except Exception as e:
+            logger.error(f"❌ HDR processing failed: {e}")
+            return jsonify({"error": "HDR processing failed", "details": str(e)}), 500
+            
+    else:
+        logger.info("📸 Processing V2 standard bundle")
+        
+        # Since iOS sends V2 bundles with metadata, just copy the original as enhanced
+        enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
+        try:
+            shutil.copy2(original_bundle_path, enhanced_bundle_path)
+            logger.info(f"📊 V2 bundle already contains metadata - copied as enhanced bundle")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not create enhanced bundle: {e}")
+        
+        # Extract images using standard method
+        bundle_file.seek(0)
+        image_files = extract_bundle_images(bundle_file, upload_dir)
+    
+    logger.info(f"Extracted/processed {len(image_files)} images for stitching")
     
     # Log input image quality info
     if image_files:
@@ -813,6 +1088,53 @@ def get_job_status(job_id: str):
         logger.info(f"📦 Status request for completed job {job_id} - bundle download available")
     
     return jsonify(enhanced_job)
+
+@app.route('/v1/panorama/original/<job_id>', methods=['GET'])
+@require_api_key
+def download_original_bundle(job_id: str):
+    """Download original HDR bundle with all bracket images and metadata"""
+    # SECURITY: Validate job ID
+    if not validate_job_id(job_id):
+        logger.warning(f"Invalid job ID format from {request.remote_addr}: {job_id}")
+        abort(400)
+    
+    with job_lock:
+        job = jobs.get(job_id)
+    if not job:
+        abort(404)
+    
+    # Check if job is completed (allow download even for failed jobs for debugging)
+    if job.get("state") not in [JobState.COMPLETED, JobState.FAILED]:
+        return jsonify({"error": "Job not ready for download"}), 202
+    
+    # Find original bundle file
+    upload_dir = UPLOAD_DIR / job_id
+    original_bundle_path = upload_dir / 'original_bundle.zip'
+    enhanced_bundle_path = upload_dir / 'original_bundle_with_metadata.zip'
+    
+    # Prefer enhanced bundle if available, fallback to original
+    if enhanced_bundle_path.exists():
+        bundle_path = enhanced_bundle_path
+        filename = f"hdr_bundle_{job_id}_enhanced.zip"
+        logger.info(f"📦 Serving enhanced HDR bundle: {bundle_path}")
+    elif original_bundle_path.exists():
+        bundle_path = original_bundle_path
+        filename = f"hdr_bundle_{job_id}_original.zip"
+        logger.info(f"📦 Serving original HDR bundle: {bundle_path}")
+    else:
+        logger.error(f"❌ No bundle file found for job {job_id}")
+        abort(404)
+    
+    try:
+        return send_file(
+            bundle_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/zip'
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to serve bundle {job_id}: {e}")
+        abort(500)
 
 @app.route('/v1/panorama/result/<job_id>', methods=['GET'])
 def download_result(job_id: str):
