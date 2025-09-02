@@ -326,7 +326,8 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                         
                         # Load EXIF from the JPG data in memory
                         try:
-                            exif_dict = piexif.load(BytesIO(original_jpg_data))
+                            # piexif.load expects bytes or filename, not BytesIO
+                            exif_dict = piexif.load(original_jpg_data)
                             
                             # Extract key FOV-related EXIF data
                             exif_metadata = {}
