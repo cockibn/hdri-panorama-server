@@ -651,11 +651,48 @@ class HuginPipelineService:
                 import numpy as np
                 
                 logger.info("🌈 Converting HDR TIFF to native EXR format...")
-                stitched_hdr = cv2.imread(stitched_tif, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                stitched_hdr = None
+                
+                # Try multiple loading methods for robustness
+                try:
+                    # Method 1: Load as-is with any depth and color
+                    stitched_hdr = cv2.imread(stitched_tif, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                    if stitched_hdr is not None:
+                        logger.info(f"✅ Loaded TIFF: {stitched_hdr.shape}, dtype: {stitched_hdr.dtype}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Method 1 failed: {e}")
+                
+                if stitched_hdr is None:
+                    try:
+                        # Method 2: Load unchanged (preserve original format)
+                        stitched_hdr = cv2.imread(stitched_tif, cv2.IMREAD_UNCHANGED)
+                        if stitched_hdr is not None:
+                            logger.info(f"✅ Loaded TIFF (unchanged): {stitched_hdr.shape}, dtype: {stitched_hdr.dtype}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Method 2 failed: {e}")
+                
+                if stitched_hdr is None:
+                    try:
+                        # Method 3: Load as grayscale then convert
+                        gray = cv2.imread(stitched_tif, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_GRAYSCALE)
+                        if gray is not None:
+                            stitched_hdr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                            logger.info(f"✅ Loaded TIFF (gray→BGR): {stitched_hdr.shape}, dtype: {stitched_hdr.dtype}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Method 3 failed: {e}")
+                
                 if stitched_hdr is not None:
                     # Ensure float32 format for EXR
                     if stitched_hdr.dtype != np.float32:
-                        stitched_hdr = stitched_hdr.astype(np.float32)
+                        # Handle different input types appropriately
+                        if stitched_hdr.dtype == np.uint8:
+                            stitched_hdr = stitched_hdr.astype(np.float32) / 255.0
+                        elif stitched_hdr.dtype == np.uint16:
+                            stitched_hdr = stitched_hdr.astype(np.float32) / 65535.0
+                        else:
+                            stitched_hdr = stitched_hdr.astype(np.float32)
+                        
+                        logger.info(f"🔄 Converted to float32: {stitched_hdr.dtype}, range: [{stitched_hdr.min():.3f}, {stitched_hdr.max():.3f}]")
                     
                     success = cv2.imwrite(final_output_path, stitched_hdr, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
                     if success:
@@ -663,7 +700,7 @@ class HuginPipelineService:
                     else:
                         raise HuginPipelineError("Failed to write EXR file")
                 else:
-                    raise HuginPipelineError("Failed to load HDR TIFF for EXR conversion")
+                    raise HuginPipelineError("Failed to load HDR TIFF for EXR conversion - all methods failed")
             else:
                 # Convert TIFF to JPG using Pillow (tone-mapped for display)
                 from PIL import Image
