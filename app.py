@@ -81,6 +81,10 @@ def validate_bundle_format(bundle_data):
     if len(bundle_data) > 500 * 1024 * 1024:  # 500MB limit
         raise ValueError("Bundle exceeds maximum size limit")
     
+    # DEBUG: Log first 100 bytes of bundle to see what we're receiving
+    header_bytes = bundle_data[:100]
+    logger.info(f"🔍 DEBUG: Bundle header (first 100 bytes): {header_bytes}")
+    
     # Support both V2 and V3 HDR bundle formats
     if bundle_data.startswith(b"HDRI_BUNDLE_V3_WITH_HDR_BRACKETS\n"):
         logger.info("🌈 Processing V3 HDR bundle with bracket support")
@@ -89,7 +93,10 @@ def validate_bundle_format(bundle_data):
         logger.info("📸 Processing V2 bundle with single images")
         return "V2"
     else:
-        raise ValueError("Invalid bundle format header - expecting HDRI_BUNDLE_V2_WITH_METADATA or HDRI_BUNDLE_V3_WITH_HDR_BRACKETS")
+        # More detailed error with actual header
+        actual_header = bundle_data[:50].decode('utf-8', errors='ignore')
+        logger.error(f"❌ Invalid bundle header received: '{actual_header}'")
+        raise ValueError(f"Invalid bundle format header - got '{actual_header}', expecting HDRI_BUNDLE_V2_WITH_METADATA or HDRI_BUNDLE_V3_WITH_HDR_BRACKETS")
 
 def parse_hdr_bundle_v3(bundle_data):
     """
