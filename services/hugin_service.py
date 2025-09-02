@@ -434,40 +434,72 @@ class HuginPipelineService:
             first_image = local_images[0]
             exif_source_image = first_image
             
+            logger.info(f"🔍 EXIF Debug: First image = {first_image}")
+            logger.info(f"🔍 EXIF Debug: Is HDR TIFF? {first_image.endswith('_hdr.tif')}")
+            
             # Check if we're processing HDR TIFF files (which lack EXIF)
             if first_image.endswith('_hdr.tif'):
                 # HDR TIFFs are in hdr_merged/ subdirectory, originals are in parent directory
                 tiff_dir = os.path.dirname(first_image)
                 parent_dir = os.path.dirname(tiff_dir)  # Go up from hdr_merged/ to upload dir
                 
+                logger.info(f"🔍 EXIF Debug: TIFF dir = {tiff_dir}")
+                logger.info(f"🔍 EXIF Debug: Parent dir = {parent_dir}")
+                logger.info(f"🔍 EXIF Debug: Parent dir exists? {os.path.exists(parent_dir)}")
+                
+                # List contents of parent directory for debugging
+                try:
+                    parent_contents = os.listdir(parent_dir)
+                    jpg_files_found = [f for f in parent_contents if f.endswith('.jpg')]
+                    logger.info(f"🔍 EXIF Debug: Parent dir contents: {parent_contents}")
+                    logger.info(f"🔍 EXIF Debug: JPG files found: {jpg_files_found}")
+                except Exception as e:
+                    logger.error(f"🔍 EXIF Debug: Error listing parent dir: {e}")
+                
                 # Method 1: Look for corresponding numbered JPG in parent directory
                 tiff_basename = os.path.basename(first_image)  # e.g., "merged_dot_0_hdr.tif"
+                logger.info(f"🔍 EXIF Debug: TIFF basename = {tiff_basename}")
+                
                 if 'merged_dot_' in tiff_basename:
                     # Extract dot number: merged_dot_0_hdr.tif -> 0
                     dot_num = tiff_basename.split('merged_dot_')[1].split('_hdr.tif')[0]
+                    logger.info(f"🔍 EXIF Debug: Extracted dot number = {dot_num}")
+                    
                     potential_jpgs = [
-                        f"img_{dot_num:02d}.jpg",    # img_00.jpg format
+                        f"img_{dot_num:02d}.jpg",    # img_00.jpg format (zero-padded)
+                        f"img_{dot_num}.jpg",        # img_0.jpg format (no padding)
                         f"image_{dot_num}.jpg",      # image_0.jpg format  
-                        f"dot_{dot_num}.jpg"         # dot_0.jpg format
+                        f"dot_{dot_num}.jpg",        # dot_0.jpg format
+                        f"{dot_num}.jpg"             # just number.jpg format
                     ]
+                    
+                    logger.info(f"🔍 EXIF Debug: Looking for JPGs: {potential_jpgs}")
                     
                     for jpg_name in potential_jpgs:
                         jpg_path = os.path.join(parent_dir, jpg_name)
+                        logger.info(f"🔍 EXIF Debug: Checking {jpg_path} - exists? {os.path.exists(jpg_path)}")
                         if os.path.exists(jpg_path):
                             exif_source_image = jpg_path
-                            logger.info(f"🔧 HDR Mode: Found {jpg_name} for EXIF (dot {dot_num})")
+                            logger.info(f"✅ HDR Mode: Found {jpg_name} for EXIF (dot {dot_num})")
                             break
                 
                 # Method 2: If specific JPG not found, use any JPG in parent directory 
                 if exif_source_image == first_image:  # Still using TIFF (no JPG found)
-                    jpg_files = [f for f in os.listdir(parent_dir) if f.endswith('.jpg')]
-                    if jpg_files:
-                        # Sort to get consistent results
-                        jpg_files.sort()
-                        exif_source_image = os.path.join(parent_dir, jpg_files[0])
-                        logger.info(f"🔧 HDR Mode: Using {jpg_files[0]} from parent dir for EXIF")
-                    else:
-                        logger.warning("⚠️ HDR Mode: No JPG found for EXIF - using fallback FOV")
+                    try:
+                        jpg_files = [f for f in os.listdir(parent_dir) if f.endswith('.jpg')]
+                        logger.info(f"🔍 EXIF Debug: All JPG files in parent: {jpg_files}")
+                        if jpg_files:
+                            # Sort to get consistent results
+                            jpg_files.sort()
+                            exif_source_image = os.path.join(parent_dir, jpg_files[0])
+                            logger.info(f"✅ HDR Mode: Using {jpg_files[0]} from parent dir for EXIF")
+                        else:
+                            logger.warning("⚠️ HDR Mode: No JPG found for EXIF - using fallback FOV")
+                    except Exception as e:
+                        logger.error(f"🔍 EXIF Debug: Error accessing parent directory: {e}")
+            
+            logger.info(f"🔍 EXIF Debug: Final EXIF source = {exif_source_image}")
+            logger.info(f"🔍 EXIF Debug: EXIF source exists? {os.path.exists(exif_source_image)}")
             
             # Calculate FOV from EXIF data with enhanced sensor dimension extraction
             calculated_fov = self._calculate_fov_from_exif(exif_source_image)
