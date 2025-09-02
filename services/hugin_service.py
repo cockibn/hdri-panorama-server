@@ -480,6 +480,7 @@ class HuginPipelineService:
                 ]
                 
                 sidecar_found = False
+                exif_metadata = {}
                 for sidecar_path in potential_sidecars:
                     logger.info(f"🔍 Checking for sidecar: {sidecar_path} - exists: {os.path.exists(sidecar_path)}")
                     if os.path.exists(sidecar_path):
@@ -498,6 +499,11 @@ class HuginPipelineService:
                                 fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
                                 calculated_fov = math.degrees(fov_radians)
                                 logger.info(f"📸 FOV from sidecar: {focal_length}mm → {calculated_fov:.1f}°")
+                                
+                                # Use sidecar FOV instead of fallback
+                                exif_source_image = first_image  # Keep current image as source
+                                sidecar_found = True
+                                break
                             
                             sidecar_found = True
                             break
@@ -570,12 +576,31 @@ class HuginPipelineService:
             logger.info(f"🔍 EXIF Debug: Final EXIF source = {exif_source_image}")
             logger.info(f"🔍 EXIF Debug: EXIF source exists? {os.path.exists(exif_source_image)}")
             
-            # Calculate FOV from EXIF data with enhanced sensor dimension extraction
-            calculated_fov = self._calculate_fov_from_exif(exif_source_image)
-            fov_str = str(int(round(calculated_fov)))
-            
-            # Extract photometric data from EXIF source for logging (helps with debugging)
-            photometric_data = self._extract_photometric_exif(exif_source_image)
+            # Calculate FOV - use sidecar if available, otherwise extract from EXIF
+            if is_hdr_tiff and sidecar_found and 'focal_length' in exif_metadata:
+                # Use FOV calculated from sidecar
+                focal_length = float(exif_metadata['focal_length'])
+                sensor_width = 5.7  # mm for iPhone ultra-wide
+                fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
+                calculated_fov = math.degrees(fov_radians)
+                fov_str = str(int(round(calculated_fov)))
+                
+                logger.info(f"✅ Using sidecar FOV: {calculated_fov:.1f}° (from {focal_length}mm focal length)")
+                
+                # Create photometric data from sidecar
+                photometric_data = {
+                    'focal_length': exif_metadata.get('focal_length'),
+                    'f_number': exif_metadata.get('f_number'), 
+                    'iso': exif_metadata.get('iso')
+                }
+                logger.info(f"📊 Sidecar photometric data: {photometric_data}")
+            else:
+                # Calculate FOV from EXIF data with enhanced sensor dimension extraction
+                calculated_fov = self._calculate_fov_from_exif(exif_source_image)
+                fov_str = str(int(round(calculated_fov)))
+                
+                # Extract photometric data from EXIF source for logging (helps with debugging)
+                photometric_data = self._extract_photometric_exif(exif_source_image)
             
             # Step 1: Generate .pto project file with EXIF-based camera settings
             logger.info(f"🚀 Step 1: Generating project file (EXIF-based FOV: {calculated_fov:.1f}°)")
