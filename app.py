@@ -310,6 +310,38 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
             hdr_merged_path = os.path.join(output_dir, f"merged_dot_{dot_index}_hdr.tif")
             hdr_success = cv2.imwrite(hdr_merged_path, hdr_image, [cv2.IMWRITE_TIFF_COMPRESSION, 1])
             
+            # **EXIF PRESERVATION**: Copy EXIF from original JPG to HDR TIFF
+            if hdr_success and brackets:
+                try:
+                    # Find the original JPG for this dot (middle exposure is most representative)
+                    middle_bracket_idx = len(brackets) // 2
+                    original_jpg_data = brackets[middle_bracket_idx].get('data')
+                    
+                    if original_jpg_data:
+                        # Extract EXIF from original JPG using piexif
+                        import piexif
+                        from io import BytesIO
+                        
+                        # Load EXIF from the JPG data in memory
+                        try:
+                            exif_dict = piexif.load(BytesIO(original_jpg_data))
+                            
+                            # Remove thumbnail data to avoid issues
+                            if "thumbnail" in exif_dict:
+                                del exif_dict["thumbnail"]
+                            if "1st" in exif_dict:
+                                del exif_dict["1st"]
+                            
+                            # Write EXIF to the HDR TIFF file
+                            exif_bytes = piexif.dump(exif_dict)
+                            piexif.insert(exif_bytes, hdr_merged_path)
+                            
+                            logger.info(f"✅ Dot {dot_index}: EXIF metadata preserved in HDR TIFF")
+                        except Exception as exif_error:
+                            logger.warning(f"⚠️ Dot {dot_index}: Could not preserve EXIF: {exif_error}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Dot {dot_index}: EXIF preservation failed: {e}")
+            
             # Also create LDR version for preview/fallback
             tonemap = cv2.createTonemapDrago(gamma=1.0, saturation=1.0, bias=0.85)
             ldr_image = tonemap.process(hdr_image)

@@ -435,10 +435,32 @@ class HuginPipelineService:
             exif_source_image = first_image
             
             logger.info(f"🔍 EXIF Debug: First image = {first_image}")
-            logger.info(f"🔍 EXIF Debug: Is HDR TIFF? {first_image.endswith('_hdr.tif')}")
             
-            # Check if we're processing HDR TIFF files (which lack EXIF)
-            if first_image.endswith('_hdr.tif'):
+            # Check if we're processing HDR TIFF files (even if renamed to .jpg)
+            is_hdr_tiff = False
+            try:
+                # Check file magic bytes to detect TIFF regardless of extension
+                with open(first_image, 'rb') as f:
+                    header = f.read(4)
+                    if header in [b'II*\x00', b'MM\x00*']:  # TIFF magic bytes
+                        # It's a TIFF file, check if it's 32-bit float (HDR)
+                        f.seek(0)
+                        # Quick check: 32-bit TIFFs are typically > 100MB for our images
+                        file_size = os.path.getsize(first_image)
+                        if file_size > 100 * 1024 * 1024:  # > 100MB suggests 32-bit
+                            is_hdr_tiff = True
+                            logger.info(f"🔍 EXIF Debug: Detected HDR TIFF renamed as .jpg ({file_size/1024/1024:.1f}MB)")
+            except Exception as e:
+                logger.warning(f"🔍 EXIF Debug: Could not detect file type: {e}")
+            
+            # Also check filename pattern as fallback
+            if not is_hdr_tiff:
+                is_hdr_tiff = first_image.endswith('_hdr.tif')
+            
+            logger.info(f"🔍 EXIF Debug: Is HDR TIFF? {is_hdr_tiff}")
+            
+            # Check if we're processing HDR TIFF files
+            if is_hdr_tiff:
                 # HDR TIFFs are in hdr_merged/ subdirectory, originals are in parent directory
                 tiff_dir = os.path.dirname(first_image)
                 parent_dir = os.path.dirname(tiff_dir)  # Go up from hdr_merged/ to upload dir
