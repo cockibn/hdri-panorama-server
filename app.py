@@ -271,7 +271,8 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                 if cv_img is not None:
                     cv_images.append(cv_img)
                     # Convert exposure bias to exposure time (assuming base shutter speed of 1/60s)
-                    exposure_time = (1.0 / 60.0) * (2.0 ** bracket['exposure'])
+                    # EV = -2 means longer exposure (brighter), EV = +2 means shorter exposure (darker)
+                    exposure_time = (1.0 / 60.0) * (2.0 ** -bracket['exposure'])
                     exposures.append(exposure_time)
                     logger.info(f"📸 Dot {dot_index}: Loaded bracket EV={bracket['exposure']}, exposure_time={exposure_time:.6f}s")
                 else:
