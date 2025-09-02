@@ -902,11 +902,24 @@ class HuginPipelineService:
                 raise HuginPipelineError(f"Image {i} missing: {img_path}")
                 
             try:
-                from PIL import Image
-                with Image.open(img_path) as img:
-                    width, height = img.size
-                    mode = img.mode
-                    logger.info(f"📸 Image {i}: {os.path.basename(img_path)} {width}×{height} ({mode})")
+                # Check if it's an HDR TIFF file that PIL can't handle
+                if img_path.endswith('_hdr.tif'):
+                    # Use OpenCV for HDR TIFF validation
+                    import cv2
+                    img = cv2.imread(img_path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                    if img is not None:
+                        height, width = img.shape[:2]
+                        dtype = img.dtype
+                        logger.info(f"📸 HDR Image {i}: {os.path.basename(img_path)} {width}×{height} ({dtype})")
+                    else:
+                        raise HuginPipelineError(f"OpenCV failed to read HDR TIFF: {img_path}")
+                else:
+                    # Use PIL for standard images
+                    from PIL import Image
+                    with Image.open(img_path) as img:
+                        width, height = img.size
+                        mode = img.mode
+                        logger.info(f"📸 Image {i}: {os.path.basename(img_path)} {width}×{height} ({mode})")
             except Exception as e:
                 raise HuginPipelineError(f"Failed to read image {img_path}: {e}")
                 
