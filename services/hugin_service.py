@@ -461,6 +461,23 @@ class HuginPipelineService:
             
             # Check if we're processing HDR TIFF files
             if is_hdr_tiff:
+                # First try to find sidecar EXIF file
+                sidecar_path = first_image.replace('.jpg', '_exif.json').replace('.tif', '_exif.json')
+                if os.path.exists(sidecar_path):
+                    try:
+                        import json
+                        with open(sidecar_path, 'r') as f:
+                            exif_metadata = json.load(f)
+                        logger.info(f"✅ Found EXIF sidecar: {os.path.basename(sidecar_path)}")
+                        logger.info(f"📊 EXIF from sidecar: focal_length={exif_metadata.get('focal_length', 'N/A')}mm")
+                        # Keep using first_image since it might have been processed to include EXIF
+                        exif_source_image = first_image
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not read EXIF sidecar: {e}")
+                        # Fall through to parent directory search
+                        is_hdr_tiff = True  # Reset flag to continue with parent dir search
+                
+                # If no sidecar or sidecar failed, look in parent directory
                 # HDR TIFFs are in hdr_merged/ subdirectory, originals are in parent directory
                 tiff_dir = os.path.dirname(first_image)
                 parent_dir = os.path.dirname(tiff_dir)  # Go up from hdr_merged/ to upload dir

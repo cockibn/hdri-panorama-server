@@ -310,7 +310,8 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
             hdr_merged_path = os.path.join(output_dir, f"merged_dot_{dot_index}_hdr.tif")
             hdr_success = cv2.imwrite(hdr_merged_path, hdr_image, [cv2.IMWRITE_TIFF_COMPRESSION, 1])
             
-            # **EXIF PRESERVATION**: Copy EXIF from original JPG to HDR TIFF
+            # **EXIF PRESERVATION**: Save EXIF metadata as sidecar file for HDR TIFF
+            # NOTE: We don't embed EXIF directly in 32-bit TIFF to avoid data corruption
             if hdr_success and brackets:
                 try:
                     # Find the original JPG for this dot (middle exposure is most representative)
@@ -320,27 +321,39 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                     if original_jpg_data:
                         # Extract EXIF from original JPG using piexif
                         import piexif
+                        import json
                         from io import BytesIO
                         
                         # Load EXIF from the JPG data in memory
                         try:
                             exif_dict = piexif.load(BytesIO(original_jpg_data))
                             
-                            # Remove thumbnail data to avoid issues
-                            if "thumbnail" in exif_dict:
-                                del exif_dict["thumbnail"]
-                            if "1st" in exif_dict:
-                                del exif_dict["1st"]
+                            # Extract key FOV-related EXIF data
+                            exif_metadata = {}
+                            if "Exif" in exif_dict:
+                                exif = exif_dict["Exif"]
+                                # Focal length
+                                if piexif.ExifIFD.FocalLength in exif:
+                                    fl = exif[piexif.ExifIFD.FocalLength]
+                                    exif_metadata['focal_length'] = fl[0] / fl[1] if isinstance(fl, tuple) else fl
+                                # F-number
+                                if piexif.ExifIFD.FNumber in exif:
+                                    fn = exif[piexif.ExifIFD.FNumber]
+                                    exif_metadata['f_number'] = fn[0] / fn[1] if isinstance(fn, tuple) else fn
+                                # ISO
+                                if piexif.ExifIFD.ISOSpeedRatings in exif:
+                                    exif_metadata['iso'] = exif[piexif.ExifIFD.ISOSpeedRatings]
                             
-                            # Write EXIF to the HDR TIFF file
-                            exif_bytes = piexif.dump(exif_dict)
-                            piexif.insert(exif_bytes, hdr_merged_path)
+                            # Save as JSON sidecar file (safe for 32-bit TIFF workflow)
+                            sidecar_path = hdr_merged_path.replace('.tif', '_exif.json')
+                            with open(sidecar_path, 'w') as f:
+                                json.dump(exif_metadata, f, indent=2)
                             
-                            logger.info(f"✅ Dot {dot_index}: EXIF metadata preserved in HDR TIFF")
+                            logger.info(f"✅ Dot {dot_index}: EXIF saved as sidecar {os.path.basename(sidecar_path)}")
                         except Exception as exif_error:
-                            logger.warning(f"⚠️ Dot {dot_index}: Could not preserve EXIF: {exif_error}")
+                            logger.warning(f"⚠️ Dot {dot_index}: Could not extract EXIF: {exif_error}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Dot {dot_index}: EXIF preservation failed: {e}")
+                    logger.warning(f"⚠️ Dot {dot_index}: EXIF extraction failed: {e}")
             
             # Also create LDR version for preview/fallback
             tonemap = cv2.createTonemapDrago(gamma=1.0, saturation=1.0, bias=0.85)
