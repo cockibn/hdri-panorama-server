@@ -645,8 +645,27 @@ class HuginPipelineService:
             final_output_path = os.path.join(self.temp_dir, output_file)
             if output_file.lower().endswith('.tif'):
                 shutil.copy2(stitched_tif, final_output_path)
+            elif output_file.lower().endswith('.exr'):
+                # Convert TIFF to EXR preserving HDR data using OpenCV
+                import cv2
+                import numpy as np
+                
+                logger.info("🌈 Converting HDR TIFF to native EXR format...")
+                stitched_hdr = cv2.imread(stitched_tif, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                if stitched_hdr is not None:
+                    # Ensure float32 format for EXR
+                    if stitched_hdr.dtype != np.float32:
+                        stitched_hdr = stitched_hdr.astype(np.float32)
+                    
+                    success = cv2.imwrite(final_output_path, stitched_hdr, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+                    if success:
+                        logger.info("✅ Native HDR EXR created successfully")
+                    else:
+                        raise HuginPipelineError("Failed to write EXR file")
+                else:
+                    raise HuginPipelineError("Failed to load HDR TIFF for EXR conversion")
             else:
-                # Convert TIFF to JPG using Pillow
+                # Convert TIFF to JPG using Pillow (tone-mapped for display)
                 from PIL import Image
                 with Image.open(stitched_tif) as img:
                     img.convert('RGB').save(final_output_path, 'JPEG', quality=95)

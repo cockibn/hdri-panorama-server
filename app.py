@@ -289,25 +289,33 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
             
             logger.info(f"🌈 Dot {dot_index}: Merging {len(cv_images)} brackets with exposures {exposures}")
             
-            # Merge HDR
+            # Merge HDR - preserve true HDR data
             hdr_image = merge_debevec.process(cv_images, exposures_np)
             
-            # Tone mapping for display/saving
+            # Save HDR merged image as 32-bit TIFF for Hugin HDR stitching
+            hdr_merged_path = os.path.join(output_dir, f"merged_dot_{dot_index}_hdr.tif")
+            hdr_success = cv2.imwrite(hdr_merged_path, hdr_image, [cv2.IMWRITE_TIFF_COMPRESSION, 1])
+            
+            # Also create LDR version for preview/fallback
             tonemap = cv2.createTonemapDrago(gamma=1.0, saturation=1.0, bias=0.85)
             ldr_image = tonemap.process(hdr_image)
-            
-            # Convert to 8-bit
             ldr_image = np.clip(ldr_image * 255, 0, 255).astype(np.uint8)
             
-            # Save merged image
             merged_image_path = os.path.join(output_dir, f"merged_dot_{dot_index}.jpg")
-            success = cv2.imwrite(merged_image_path, ldr_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            ldr_success = cv2.imwrite(merged_image_path, ldr_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
             
-            if success:
+            # Use HDR TIFF for stitching if successful, fallback to LDR
+            if hdr_success:
+                merged_images[dot_index] = hdr_merged_path
+                logger.info(f"✅ Dot {dot_index}: True HDR merge saved as 32-bit TIFF for stitching")
+                success = True
+            elif ldr_success:
                 merged_images[dot_index] = merged_image_path
-                logger.info(f"✅ Dot {dot_index}: HDR merge completed, saved to {merged_image_path}")
+                logger.warning(f"⚠️ Dot {dot_index}: HDR TIFF failed, using LDR JPG fallback")
+                success = True
             else:
-                logger.error(f"❌ Dot {dot_index}: Failed to save merged HDR image")
+                logger.error(f"❌ Dot {dot_index}: Both HDR and LDR saves failed")
+                success = False
                 
         except Exception as e:
             logger.error(f"❌ Dot {dot_index}: HDR merge failed - {str(e)}")
@@ -747,39 +755,67 @@ class MicroservicesPanoramaProcessor:
                 self._update_job_status(job_id, JobState.PROCESSING, mapped_progress, message)
                 
             try:
-                # Use the proven workflow to create panorama
-                output_file = f"panorama_{job_id}.jpg"
-                panorama_path = self.hugin_service.stitch_panorama(
-                    images=image_files,
-                    output_file=output_file,
-                    session_metadata=session_data,
-                    progress_callback=hugin_progress_callback
-                )
+                # Check if we have HDR TIFF inputs for native HDR processing
+                hdr_tiff_count = sum(1 for img_path in image_files if img_path.endswith('_hdr.tif'))
+                has_hdr_inputs = hdr_tiff_count > 0
                 
-                # Move panorama to output directory
-                final_output_path = os.path.join(OUTPUT_DIR, f"{job_id}.jpg")
-                shutil.move(panorama_path, final_output_path)
-                
-                # Calculate file size
-                output_size_mb = os.path.getsize(final_output_path) / (1024 * 1024)
+                if has_hdr_inputs:
+                    # Native HDR workflow: Create true HDR EXR panorama
+                    logger.info(f"🌈 Processing {hdr_tiff_count} HDR TIFF inputs for native HDR panorama")
+                    exr_output_file = f"panorama_{job_id}.exr"
+                    panorama_path = self.hugin_service.stitch_panorama(
+                        images=image_files,
+                        output_file=exr_output_file,
+                        session_metadata=session_data,
+                        progress_callback=hugin_progress_callback
+                    )
+                    
+                    # Move HDR EXR to output directory
+                    exr_output_path = os.path.join(OUTPUT_DIR, f"{job_id}_panorama.exr")
+                    shutil.move(panorama_path, exr_output_path)
+                    exr_size_mb = os.path.getsize(exr_output_path) / (1024 * 1024)
+                    logger.info(f"✅ Native HDR EXR panorama created: {exr_size_mb:.1f}MB")
+                    
+                    # Create tone-mapped JPG for preview/compatibility
+                    logger.info("🖼️ Creating tone-mapped JPG preview from HDR EXR...")
+                    jpg_output_path = os.path.join(OUTPUT_DIR, f"{job_id}.jpg")
+                    try:
+                        hdr_panorama = cv2.imread(exr_output_path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                        if hdr_panorama is not None:
+                            # Tone mapping for JPG preview
+                            tonemap = cv2.createTonemapDrago(gamma=1.0, saturation=1.0, bias=0.85)
+                            ldr_preview = tonemap.process(hdr_panorama)
+                            ldr_preview = np.clip(ldr_preview * 255, 0, 255).astype(np.uint8)
+                            
+                            cv2.imwrite(jpg_output_path, ldr_preview, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                            jpg_size_mb = os.path.getsize(jpg_output_path) / (1024 * 1024)
+                            logger.info(f"✅ Tone-mapped JPG preview: {jpg_size_mb:.1f}MB")
+                        else:
+                            logger.warning("⚠️ Failed to load EXR for JPG preview creation")
+                    except Exception as e:
+                        logger.error(f"❌ JPG preview creation failed: {e}")
+                    
+                    final_output_path = jpg_output_path
+                    output_size_mb = exr_size_mb
+                    
+                else:
+                    # Standard LDR workflow: Create JPG panorama
+                    logger.info("📷 Processing LDR inputs for standard JPG panorama")
+                    jpg_output_file = f"panorama_{job_id}.jpg"
+                    panorama_path = self.hugin_service.stitch_panorama(
+                        images=image_files,
+                        output_file=jpg_output_file,
+                        session_metadata=session_data,
+                        progress_callback=hugin_progress_callback
+                    )
+                    
+                    # Move JPG to output directory
+                    final_output_path = os.path.join(OUTPUT_DIR, f"{job_id}.jpg")
+                    shutil.move(panorama_path, final_output_path)
+                    output_size_mb = os.path.getsize(final_output_path) / (1024 * 1024)
                 
                 processing_time = time.time() - start_time
                 logger.info(f"✅ Panorama processing completed in {processing_time:.1f}s: {output_size_mb:.1f}MB")
-                
-                # Create EXR version for high-quality download
-                logger.info("🌈 Creating HDR EXR version...")
-                exr_output_path = os.path.join(OUTPUT_DIR, f"{job_id}_panorama.exr")
-                try:
-                    # Read the panorama as float32 for EXR conversion
-                    panorama_float = cv2.imread(final_output_path).astype(np.float32) / 255.0
-                    success = cv2.imwrite(exr_output_path, panorama_float, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
-                    if success:
-                        exr_size_mb = os.path.getsize(exr_output_path) / (1024 * 1024)
-                        logger.info(f"✅ EXR created: {exr_size_mb:.1f}MB")
-                    else:
-                        logger.warning("⚠️ Failed to create EXR version")
-                except Exception as e:
-                    logger.error(f"❌ EXR creation failed: {e}")
                 
                 # Create preview with photosphere metadata
                 logger.info("🖼️ Creating panorama preview with photosphere metadata...")
