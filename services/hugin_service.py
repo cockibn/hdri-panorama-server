@@ -425,6 +425,13 @@ class HuginPipelineService:
                 shutil.copy2(abs_img_path, local_name)
                 local_images.append(local_name)
                 
+                # Also copy sidecar JSON if it exists (for HDR TIFF EXIF data)
+                json_sidecar = abs_img_path.replace('.tif', '_exif.json').replace('.jpg', '_exif.json')
+                if os.path.exists(json_sidecar):
+                    local_json = local_name.replace('.jpg', '_exif.json')
+                    shutil.copy2(json_sidecar, local_json)
+                    logger.info(f"📄 Copied EXIF sidecar: {os.path.basename(json_sidecar)} → {local_json}")
+                
             if progress_callback:
                 progress_callback(0.1, "Copied images to working directory")
             
@@ -461,21 +468,44 @@ class HuginPipelineService:
             
             # Check if we're processing HDR TIFF files
             if is_hdr_tiff:
-                # First try to find sidecar EXIF file
-                sidecar_path = first_image.replace('.jpg', '_exif.json').replace('.tif', '_exif.json')
-                if os.path.exists(sidecar_path):
-                    try:
-                        import json
-                        with open(sidecar_path, 'r') as f:
-                            exif_metadata = json.load(f)
-                        logger.info(f"✅ Found EXIF sidecar: {os.path.basename(sidecar_path)}")
-                        logger.info(f"📊 EXIF from sidecar: focal_length={exif_metadata.get('focal_length', 'N/A')}mm")
-                        # Keep using first_image since it might have been processed to include EXIF
-                        exif_source_image = first_image
-                    except Exception as e:
-                        logger.warning(f"⚠️ Could not read EXIF sidecar: {e}")
-                        # Fall through to parent directory search
-                        is_hdr_tiff = True  # Reset flag to continue with parent dir search
+                logger.info(f"🔍 HDR TIFF detected, looking for EXIF sidecar...")
+                
+                # Try multiple sidecar naming patterns (Hugin renames files)
+                potential_sidecars = [
+                    first_image.replace('.jpg', '_exif.json'),  # img01_exif.json
+                    first_image.replace('.jpg', '.json'),       # img01.json
+                    # Look for original naming pattern in same directory
+                    os.path.join(os.path.dirname(first_image), 'merged_dot_0_hdr_exif.json'),
+                    os.path.join(os.path.dirname(first_image), 'img01_exif.json'),
+                ]
+                
+                sidecar_found = False
+                for sidecar_path in potential_sidecars:
+                    logger.info(f"🔍 Checking for sidecar: {sidecar_path} - exists: {os.path.exists(sidecar_path)}")
+                    if os.path.exists(sidecar_path):
+                        try:
+                            import json
+                            with open(sidecar_path, 'r') as f:
+                                exif_metadata = json.load(f)
+                            logger.info(f"✅ Found EXIF sidecar: {os.path.basename(sidecar_path)}")
+                            logger.info(f"📊 EXIF from sidecar: {exif_metadata}")
+                            
+                            # Calculate FOV from sidecar focal length if available
+                            if 'focal_length' in exif_metadata:
+                                focal_length = float(exif_metadata['focal_length'])
+                                # Use standard iPhone sensor width
+                                sensor_width = 5.7  # mm for iPhone ultra-wide
+                                fov_radians = 2 * math.atan(sensor_width / (2 * focal_length))
+                                calculated_fov = math.degrees(fov_radians)
+                                logger.info(f"📸 FOV from sidecar: {focal_length}mm → {calculated_fov:.1f}°")
+                            
+                            sidecar_found = True
+                            break
+                        except Exception as e:
+                            logger.warning(f"⚠️ Could not read sidecar {sidecar_path}: {e}")
+                
+                if not sidecar_found:
+                    logger.warning("⚠️ No EXIF sidecar found, looking in parent directory for original JPGs...")
                 
                 # If no sidecar or sidecar failed, look in parent directory
                 # HDR TIFFs are in hdr_merged/ subdirectory, originals are in parent directory

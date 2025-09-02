@@ -347,10 +347,18 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                             
                             # Save as JSON sidecar file (safe for 32-bit TIFF workflow)
                             sidecar_path = hdr_merged_path.replace('.tif', '_exif.json')
+                            logger.info(f"🔍 Saving EXIF to: {sidecar_path}")
+                            logger.info(f"🔍 EXIF data: {exif_metadata}")
+                            
                             with open(sidecar_path, 'w') as f:
                                 json.dump(exif_metadata, f, indent=2)
                             
-                            logger.info(f"✅ Dot {dot_index}: EXIF saved as sidecar {os.path.basename(sidecar_path)}")
+                            # Verify file was created
+                            if os.path.exists(sidecar_path):
+                                file_size = os.path.getsize(sidecar_path)
+                                logger.info(f"✅ Dot {dot_index}: EXIF saved as sidecar {os.path.basename(sidecar_path)} ({file_size} bytes)")
+                            else:
+                                logger.error(f"❌ Dot {dot_index}: Failed to create sidecar file!")
                         except Exception as exif_error:
                             logger.warning(f"⚠️ Dot {dot_index}: Could not extract EXIF: {exif_error}")
                 except Exception as e:
