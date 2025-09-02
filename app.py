@@ -292,6 +292,20 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
             # Merge HDR - preserve true HDR data
             hdr_image = merge_debevec.process(cv_images, exposures_np)
             
+            # **HDR MERGE VALIDATION**: Verify we created true HDR data
+            hdr_min, hdr_max = hdr_image.min(), hdr_image.max()
+            hdr_values_above_1 = np.sum(hdr_image > 1.0)
+            hdr_total_pixels = hdr_image.size
+            hdr_percentage = (hdr_values_above_1 / hdr_total_pixels) * 100
+            
+            logger.info(f"🔍 HDR Merge Dot {dot_index}: range=[{hdr_min:.6f}, {hdr_max:.6f}]")
+            logger.info(f"🔍 HDR Merge: {hdr_values_above_1}/{hdr_total_pixels} ({hdr_percentage:.2f}%) pixels above 1.0")
+            
+            if hdr_max > 1.0:
+                logger.info(f"✅ Dot {dot_index}: Authentic HDR data created (max={hdr_max:.3f})")
+            else:
+                logger.warning(f"⚠️ Dot {dot_index}: HDR merge may have failed - no values > 1.0")
+            
             # Save HDR merged image as 32-bit TIFF for Hugin HDR stitching
             hdr_merged_path = os.path.join(output_dir, f"merged_dot_{dot_index}_hdr.tif")
             hdr_success = cv2.imwrite(hdr_merged_path, hdr_image, [cv2.IMWRITE_TIFF_COMPRESSION, 1])

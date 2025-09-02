@@ -682,20 +682,60 @@ class HuginPipelineService:
                         logger.warning(f"⚠️ Method 3 failed: {e}")
                 
                 if stitched_hdr is not None:
+                    # **HDR VALIDATION**: Check if we have true HDR data
+                    original_min, original_max = stitched_hdr.min(), stitched_hdr.max()
+                    logger.info(f"🔍 HDR Analysis - Original TIFF: dtype={stitched_hdr.dtype}, shape={stitched_hdr.shape}")
+                    logger.info(f"🔍 HDR Range: [{original_min:.6f}, {original_max:.6f}]")
+                    
+                    # Check for HDR indicators
+                    values_above_1 = np.sum(stitched_hdr > 1.0)
+                    total_pixels = stitched_hdr.size
+                    hdr_percentage = (values_above_1 / total_pixels) * 100
+                    logger.info(f"🔍 HDR Pixels: {values_above_1}/{total_pixels} ({hdr_percentage:.2f}%) above 1.0")
+                    
+                    if original_max > 1.0:
+                        logger.info("✅ AUTHENTIC HDR: Values exceed 1.0 - true HDR data detected")
+                    else:
+                        logger.warning("⚠️ POTENTIAL LDR: All values ≤ 1.0 - may be tone-mapped data")
+                    
                     # Ensure float32 format for EXR
                     if stitched_hdr.dtype != np.float32:
                         # Handle different input types appropriately
                         if stitched_hdr.dtype == np.uint8:
                             stitched_hdr = stitched_hdr.astype(np.float32) / 255.0
+                            logger.info("🔄 Converted uint8 → float32 (0-1 range)")
                         elif stitched_hdr.dtype == np.uint16:
                             stitched_hdr = stitched_hdr.astype(np.float32) / 65535.0
+                            logger.info("🔄 Converted uint16 → float32 (0-1 range)")
                         else:
                             stitched_hdr = stitched_hdr.astype(np.float32)
+                            logger.info(f"🔄 Converted {original_min} → float32 (preserved range)")
                         
-                        logger.info(f"🔄 Converted to float32: {stitched_hdr.dtype}, range: [{stitched_hdr.min():.3f}, {stitched_hdr.max():.3f}]")
+                        final_min, final_max = stitched_hdr.min(), stitched_hdr.max()
+                        logger.info(f"🔄 Final range: [{final_min:.6f}, {final_max:.6f}]")
                     
                     success = cv2.imwrite(final_output_path, stitched_hdr, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
                     if success:
+                        # **EXR VALIDATION**: Verify the saved EXR file  
+                        try:
+                            verification_img = cv2.imread(final_output_path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                            if verification_img is not None:
+                                exr_min, exr_max = verification_img.min(), verification_img.max()
+                                exr_values_above_1 = np.sum(verification_img > 1.0)
+                                exr_hdr_percentage = (exr_values_above_1 / verification_img.size) * 100
+                                
+                                logger.info(f"🎯 EXR Verification: range=[{exr_min:.6f}, {exr_max:.6f}]")
+                                logger.info(f"🎯 EXR HDR Pixels: {exr_values_above_1} ({exr_hdr_percentage:.2f}%) above 1.0")
+                                
+                                if exr_max > 1.0:
+                                    logger.info("✅ SUCCESS: EXR contains authentic HDR data (values > 1.0)")
+                                else:
+                                    logger.warning("⚠️ WARNING: EXR may not contain true HDR data")
+                            else:
+                                logger.warning("⚠️ Could not verify EXR file")
+                        except Exception as e:
+                            logger.warning(f"⚠️ EXR verification failed: {e}")
+                        
                         logger.info("✅ Native HDR EXR created successfully")
                     else:
                         raise HuginPipelineError("Failed to write EXR file")
