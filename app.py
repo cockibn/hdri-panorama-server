@@ -1160,11 +1160,19 @@ def download_result(job_id: str):
     if not job or job.get("state") != JobState.COMPLETED:
         abort(404)
     
-    result_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
-    if not result_path.exists():
-        abort(404)
+    # Try EXR first, then fallback to JPG (current server creates JPG files)
+    exr_path = OUTPUT_DIR / f"{job_id}_panorama.exr"
+    jpg_path = OUTPUT_DIR / f"{job_id}.jpg"
     
-    return send_file(str(result_path), as_attachment=True, download_name=f"panorama_{job_id}.exr")
+    if exr_path.exists():
+        logger.info(f"📸 Serving EXR panorama: {exr_path}")
+        return send_file(str(exr_path), as_attachment=True, download_name=f"panorama_{job_id}.exr")
+    elif jpg_path.exists():
+        logger.info(f"📸 Serving JPG panorama: {jpg_path}")
+        return send_file(str(jpg_path), as_attachment=True, download_name=f"panorama_{job_id}.jpg")
+    else:
+        logger.error(f"❌ No panorama file found for job {job_id} (checked EXR and JPG)")
+        abort(404)
 
 @app.route('/v1/panorama/preview/<job_id>', methods=['GET'])
 def preview_result(job_id: str):
