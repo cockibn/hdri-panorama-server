@@ -958,7 +958,7 @@ class MicroservicesPanoramaProcessor:
             return None
 
     def _create_photosphere_preview(self, panorama: np.ndarray, preview_path: str, session_data: dict):
-        """Create JPEG preview with 360° photosphere metadata."""
+        """Create optimized JPEG preview with 360° photosphere metadata for mobile viewing."""
         try:
             # Convert to uint8 for JPEG
             if panorama.dtype == np.float32 or panorama.dtype == np.float64:
@@ -966,28 +966,59 @@ class MicroservicesPanoramaProcessor:
             else:
                 panorama_preview = panorama
                 
+            height, width = panorama_preview.shape[:2]
+            original_size_mb = (height * width * 3) / (1024 * 1024)
+            logger.info(f"📱 Creating preview from {width}×{height} panorama ({original_size_mb:.1f}MB uncompressed)")
+                
+            # Optimize preview size for mobile viewing
+            # Target: 2K width (2048px) for good quality without excessive file size
+            max_preview_width = 2048
+            if width > max_preview_width:
+                scale_factor = max_preview_width / width
+                new_width = max_preview_width
+                new_height = int(height * scale_factor)
+                
+                logger.info(f"🔄 Scaling preview from {width}×{height} to {new_width}×{new_height} (scale: {scale_factor:.3f})")
+                panorama_preview = cv2.resize(panorama_preview, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                
             result_rgb = cv2.cvtColor(panorama_preview, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(result_rgb)
             
-            # Add basic EXIF metadata
+            # Enhanced EXIF metadata with Google Photosphere support
             import piexif
-            height, width = panorama_preview.shape[:2]
+            final_height, final_width = panorama_preview.shape[:2]
+            
             exif_dict = {
                 "0th": {
                     piexif.ImageIFD.Make: "HDRi 360 Studio",
                     piexif.ImageIFD.Model: "Microservices Panorama Processor",
                     piexif.ImageIFD.Software: "ARKit + Hugin Pipeline",
-                    piexif.ImageIFD.ImageDescription: "Equirectangular 360° Photosphere"
+                    piexif.ImageIFD.ImageDescription: "Equirectangular 360° Photosphere Preview",
+                    piexif.ImageIFD.ImageWidth: final_width,
+                    piexif.ImageIFD.ImageLength: final_height
+                },
+                "Exif": {
+                    piexif.ExifIFD.PixelXDimension: final_width,
+                    piexif.ExifIFD.PixelYDimension: final_height,
+                    piexif.ExifIFD.ColorSpace: 1  # sRGB
                 }
             }
             
             try:
                 exif_bytes = piexif.dump(exif_dict)
-                pil_image.save(preview_path, 'JPEG', quality=85, optimize=True, exif=exif_bytes)
-                logger.info("📱 JPEG preview saved with EXIF metadata")
+                # Use high quality (95%) for preview to maintain visual quality despite scaling
+                pil_image.save(preview_path, 'JPEG', quality=95, optimize=True, exif=exif_bytes)
+                
+                # Log preview file size
+                preview_size_mb = os.path.getsize(preview_path) / (1024 * 1024)
+                logger.info(f"✅ Optimized preview saved: {final_width}×{final_height}, {preview_size_mb:.1f}MB (JPEG 95%)")
+                
             except Exception as e:
                 logger.warning(f"⚠️ Could not add metadata: {e}")
-                pil_image.save(preview_path, 'JPEG', quality=85, optimize=True)
+                # Fallback without metadata but still high quality
+                pil_image.save(preview_path, 'JPEG', quality=95, optimize=True)
+                preview_size_mb = os.path.getsize(preview_path) / (1024 * 1024)
+                logger.info(f"✅ Preview saved (no metadata): {final_width}×{final_height}, {preview_size_mb:.1f}MB")
                 
         except Exception as e:
             logger.error(f"❌ Failed to create preview: {e}")
