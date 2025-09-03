@@ -1147,8 +1147,9 @@ class MicroservicesPanoramaProcessor:
             
             # Method 2: Improved Simple tone mapping (most reliable)
             try:
-                # Normalize HDR range first
-                hdr_normalized = hdr_scaled / (hdr_scaled.max() + 1e-6)  # Prevent division by zero
+                # Clip negative values and normalize HDR range
+                hdr_positive = np.clip(hdr_scaled, 0, None)  # Remove negative values
+                hdr_normalized = hdr_positive / (hdr_positive.max() + 1e-6)  # Prevent division by zero
                 
                 # Apply gentle exposure adjustment based on image statistics
                 hdr_median = np.median(hdr_normalized)
@@ -1157,7 +1158,7 @@ class MicroservicesPanoramaProcessor:
                 
                 exposure_adjusted = hdr_normalized * exposure_factor
                 
-                # Apply gamma correction for better color balance
+                # Apply gamma correction for better color balance (safe with positive values)
                 simple_result = np.clip(np.power(exposure_adjusted, 1.0/2.0), 0, 1)  # Lighter gamma
                 simple_mean = simple_result.mean()
                 tone_mapping_results.append(('Smart_Simple', simple_result, simple_mean))
@@ -1167,8 +1168,10 @@ class MicroservicesPanoramaProcessor:
             
             # Method 3: Drago (fallback for high contrast)  
             try:
+                # Ensure positive values for OpenCV tone mapping
+                hdr_positive_drago = np.clip(hdr_scaled, 0, None)
                 tonemap_drago = cv2.createTonemapDrago(gamma=1.2, saturation=0.8, bias=0.75)
-                drago_result = tonemap_drago.process(hdr_scaled)
+                drago_result = tonemap_drago.process(hdr_positive_drago.astype(np.float32))
                 drago_mean = drago_result.mean()
                 tone_mapping_results.append(('Drago', drago_result, drago_mean))
                 logger.info(f"🎨 Drago tone mapping: mean brightness = {drago_mean:.3f}")
