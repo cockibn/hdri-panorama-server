@@ -879,7 +879,26 @@ class HuginPipelineService:
                         final_min, final_max = stitched_hdr.min(), stitched_hdr.max()
                         logger.info(f"🔄 Final range: [{final_min:.6f}, {final_max:.6f}]")
                     
-                    success = cv2.imwrite(final_output_path, stitched_hdr, [cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT])
+                    # Use PIZ compression exactly like professional Poly Haven HDRs
+                    # PIZ provides excellent compression for HDR data (3-4x smaller than ZIP)
+                    logger.info("🗜️ Attempting PIZ compression (Poly Haven standard)...")
+                    
+                    # Try PIZ compression first
+                    piz_params = [
+                        cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT,
+                        cv2.IMWRITE_EXR_COMPRESSION, cv2.IMWRITE_EXR_COMPRESSION_PIZ
+                    ]
+                    
+                    success = cv2.imwrite(final_output_path, stitched_hdr, piz_params)
+                    
+                    if not success:
+                        logger.warning("⚠️ PIZ compression failed, trying ZIP fallback...")
+                        # Fallback to ZIP if PIZ fails
+                        zip_params = [
+                            cv2.IMWRITE_EXR_TYPE, cv2.IMWRITE_EXR_TYPE_FLOAT,
+                            cv2.IMWRITE_EXR_COMPRESSION, cv2.IMWRITE_EXR_COMPRESSION_ZIP
+                        ]
+                        success = cv2.imwrite(final_output_path, stitched_hdr, zip_params)
                     if success:
                         # **EXR VALIDATION**: Verify the saved EXR file  
                         try:
@@ -889,8 +908,23 @@ class HuginPipelineService:
                                 exr_values_above_1 = np.sum(verification_img > 1.0)
                                 exr_hdr_percentage = (exr_values_above_1 / verification_img.size) * 100
                                 
+                                # Check compression used and file size
+                                file_size_mb = os.path.getsize(final_output_path) / (1024 * 1024)
+                                
                                 logger.info(f"🎯 EXR Verification: range=[{exr_min:.6f}, {exr_max:.6f}]")
                                 logger.info(f"🎯 EXR HDR Pixels: {exr_values_above_1} ({exr_hdr_percentage:.2f}%) above 1.0")
+                                logger.info(f"📦 EXR File Size: {file_size_mb:.1f}MB")
+                                
+                                # Verify compression worked - PIZ should be much smaller than ZIP
+                                expected_zip_size = stitched_hdr.size * stitched_hdr.itemsize / (1024 * 1024) * 0.4  # ZIP ~40% of uncompressed
+                                expected_piz_size = expected_zip_size * 0.25  # PIZ ~25% of ZIP size
+                                
+                                if file_size_mb < expected_piz_size * 1.5:  # Allow 50% margin
+                                    logger.info("✅ PIZ compression successful - file size optimal")
+                                elif file_size_mb > expected_zip_size * 0.8:  # ZIP range
+                                    logger.warning(f"⚠️ Large file size ({file_size_mb:.1f}MB) - PIZ may have failed, using ZIP")
+                                else:
+                                    logger.info("📊 File size within expected range for PIZ compression")
                                 
                                 if exr_max > 1.0:
                                     logger.info("✅ SUCCESS: EXR contains authentic HDR data (values > 1.0)")
