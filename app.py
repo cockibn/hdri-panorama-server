@@ -958,15 +958,29 @@ class MicroservicesPanoramaProcessor:
                 processing_time = time.time() - start_time
                 logger.info(f"✅ Panorama processing completed in {processing_time:.1f}s: {output_size_mb:.1f}MB")
                 
-                # Create preview with photosphere metadata
-                logger.info("🖼️ Creating panorama preview with photosphere metadata...")
+                # Create preview with proper HDR tone mapping
+                logger.info("🖼️ Creating optimized panorama preview from HDR data...")
                 preview_path = os.path.join(OUTPUT_DIR, f"{job_id}_preview.jpg")
-                panorama_image = cv2.imread(final_output_path)
-                if panorama_image is not None:
-                    self._create_photosphere_preview(panorama_image, preview_path, session_data)
-                    logger.info(f"📱 Preview created: {preview_path}")
+                
+                # Load HDR data properly if it's an EXR file
+                if final_output_path.endswith('.exr'):
+                    # Load HDR EXR with proper flags
+                    hdr_panorama = cv2.imread(final_output_path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                    if hdr_panorama is not None:
+                        logger.info(f"📱 Loaded HDR panorama: {hdr_panorama.shape}, range=[{hdr_panorama.min():.3f}, {hdr_panorama.max():.3f}]")
+                        # Create tone-mapped preview directly from HDR data
+                        self._create_hdr_photosphere_preview(hdr_panorama, preview_path, session_data)
+                        logger.info(f"📱 HDR preview created: {preview_path}")
+                    else:
+                        logger.warning("⚠️ Could not load HDR EXR for preview creation")
                 else:
-                    logger.warning("⚠️ Could not load panorama for preview creation")
+                    # Standard LDR image
+                    panorama_image = cv2.imread(final_output_path)
+                    if panorama_image is not None:
+                        self._create_photosphere_preview(panorama_image, preview_path, session_data)
+                        logger.info(f"📱 Standard preview created: {preview_path}")
+                    else:
+                        logger.warning("⚠️ Could not load panorama for preview creation")
                 
                 # Generate result URLs
                 result_url = f"/v1/panorama/result/{job_id}" if base_url else None
@@ -1094,6 +1108,133 @@ class MicroservicesPanoramaProcessor:
                 
         except Exception as e:
             logger.error(f"❌ Failed to create preview: {e}")
+    
+    def _create_hdr_photosphere_preview(self, hdr_panorama: np.ndarray, preview_path: str, session_data: dict):
+        """Create optimized JPEG preview from HDR EXR data with proper tone mapping."""
+        try:
+            height, width = hdr_panorama.shape[:2]
+            hdr_min, hdr_max = hdr_panorama.min(), hdr_panorama.max()
+            dynamic_range = np.log2(hdr_max / hdr_min) if hdr_min > 0 else 0
+            
+            logger.info(f"🌈 Processing HDR preview: {width}×{height}, DR={dynamic_range:.1f} stops, range=[{hdr_min:.3f}, {hdr_max:.3f}]")
+            
+            # Scale down first to reduce processing time (before tone mapping)
+            max_preview_width = 2048
+            if width > max_preview_width:
+                scale_factor = max_preview_width / width
+                new_width = max_preview_width
+                new_height = int(height * scale_factor)
+                logger.info(f"🔄 Scaling HDR before tone mapping: {width}×{height} → {new_width}×{new_height}")
+                hdr_scaled = cv2.resize(hdr_panorama, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+            else:
+                hdr_scaled = hdr_panorama.copy()
+            
+            # Test multiple tone mapping methods and choose best
+            tone_mapping_results = []
+            
+            # Method 1: Reinhard (good for most scenes)
+            try:
+                tonemap_reinhard = cv2.createTonemapReinhard(gamma=2.2, intensity=0, light_adapt=1.0, color_adapt=0.0)
+                reinhard_result = tonemap_reinhard.process(hdr_scaled)
+                reinhard_mean = reinhard_result.mean()
+                tone_mapping_results.append(('Reinhard', reinhard_result, reinhard_mean))
+                logger.info(f"🎨 Reinhard tone mapping: mean brightness = {reinhard_mean:.3f}")
+            except Exception as e:
+                logger.warning(f"⚠️ Reinhard tone mapping failed: {e}")
+            
+            # Method 2: Drago (good for high contrast scenes)  
+            try:
+                tonemap_drago = cv2.createTonemapDrago(gamma=1.0, saturation=1.0, bias=0.85)
+                drago_result = tonemap_drago.process(hdr_scaled)
+                drago_mean = drago_result.mean()
+                tone_mapping_results.append(('Drago', drago_result, drago_mean))
+                logger.info(f"🎨 Drago tone mapping: mean brightness = {drago_mean:.3f}")
+            except Exception as e:
+                logger.warning(f"⚠️ Drago tone mapping failed: {e}")
+            
+            # Method 3: Simple exposure adjustment (fallback)
+            try:
+                # Simple exposure-based tone mapping
+                exposure_adjusted = hdr_scaled * 2.0  # Increase exposure
+                simple_result = np.clip(np.power(exposure_adjusted, 1.0/2.2), 0, 1)  # Gamma correction
+                simple_mean = simple_result.mean()
+                tone_mapping_results.append(('Simple', simple_result, simple_mean))
+                logger.info(f"🎨 Simple tone mapping: mean brightness = {simple_mean:.3f}")
+            except Exception as e:
+                logger.warning(f"⚠️ Simple tone mapping failed: {e}")
+            
+            # Choose best tone mapping result (aim for 0.3-0.5 mean brightness)
+            if tone_mapping_results:
+                # Score based on how close to ideal brightness (0.4) and avoid over/under exposure
+                best_result = None
+                best_score = -1
+                
+                for method_name, result, mean_brightness in tone_mapping_results:
+                    # Penalize too dark (<0.2) or too bright (>0.7)
+                    brightness_score = 1.0 - abs(mean_brightness - 0.4) * 2
+                    if mean_brightness < 0.2 or mean_brightness > 0.7:
+                        brightness_score *= 0.5
+                    
+                    logger.info(f"🏆 {method_name}: brightness={mean_brightness:.3f}, score={brightness_score:.3f}")
+                    
+                    if brightness_score > best_score:
+                        best_score = brightness_score
+                        best_result = (method_name, result)
+                
+                if best_result:
+                    method_name, tone_mapped = best_result
+                    logger.info(f"✅ Selected {method_name} tone mapping for preview")
+                else:
+                    tone_mapped = tone_mapping_results[0][1]  # Fallback to first result
+                    method_name = tone_mapping_results[0][0]
+            else:
+                # Emergency fallback
+                logger.warning("⚠️ All tone mapping failed, using simple clamp")
+                tone_mapped = np.clip(hdr_scaled, 0, 1)
+                method_name = "Clamp"
+            
+            # Convert to 8-bit
+            ldr_preview = (np.clip(tone_mapped, 0, 1) * 255).astype(np.uint8)
+            final_height, final_width = ldr_preview.shape[:2]
+            
+            # Convert BGR to RGB for PIL
+            result_rgb = cv2.cvtColor(ldr_preview, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(result_rgb)
+            
+            # Enhanced EXIF metadata with HDR info
+            import piexif
+            exif_dict = {
+                "0th": {
+                    piexif.ImageIFD.Make: "HDRi 360 Studio",
+                    piexif.ImageIFD.Model: "HDR Panorama Processor",
+                    piexif.ImageIFD.Software: f"ARKit + Hugin + {method_name} Tone Mapping",
+                    piexif.ImageIFD.ImageDescription: f"HDR 360° Photosphere Preview (DR: {dynamic_range:.1f} stops)",
+                    piexif.ImageIFD.ImageWidth: final_width,
+                    piexif.ImageIFD.ImageLength: final_height
+                },
+                "Exif": {
+                    piexif.ExifIFD.PixelXDimension: final_width,
+                    piexif.ExifIFD.PixelYDimension: final_height,
+                    piexif.ExifIFD.ColorSpace: 1  # sRGB
+                }
+            }
+            
+            try:
+                exif_bytes = piexif.dump(exif_dict)
+                # Use highest quality (98%) for HDR previews to preserve detail
+                pil_image.save(preview_path, 'JPEG', quality=98, optimize=True, exif=exif_bytes)
+                
+                preview_size_mb = os.path.getsize(preview_path) / (1024 * 1024)
+                logger.info(f"✅ HDR preview saved: {final_width}×{final_height}, {preview_size_mb:.1f}MB, {method_name} tone mapping")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Could not add HDR metadata: {e}")
+                pil_image.save(preview_path, 'JPEG', quality=98, optimize=True)
+                preview_size_mb = os.path.getsize(preview_path) / (1024 * 1024)
+                logger.info(f"✅ HDR preview saved (no metadata): {final_width}×{final_height}, {preview_size_mb:.1f}MB")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to create HDR preview: {e}")
             
     def _update_job_status(self, job_id: str, state: str, progress: float, message: str, 
                           result_url: str = None, quality_metrics: dict = None):
