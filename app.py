@@ -936,7 +936,8 @@ class MicroservicesPanoramaProcessor:
                     except Exception as e:
                         logger.error(f"❌ JPG preview creation failed: {e}")
                     
-                    final_output_path = jpg_output_path
+                    # Use EXR path for HDR preview generation
+                    final_output_path = exr_output_path  # Changed to use EXR for proper HDR tone mapping
                     output_size_mb = exr_size_mb
                     
                 else:
