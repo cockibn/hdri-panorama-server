@@ -963,6 +963,7 @@ class MicroservicesPanoramaProcessor:
                 preview_path = os.path.join(OUTPUT_DIR, f"{job_id}_preview.jpg")
                 
                 # Load HDR data properly if it's an EXR file
+                logger.info(f"🔍 Checking file extension: {final_output_path}")
                 if final_output_path.endswith('.exr'):
                     # Load HDR EXR with proper flags
                     hdr_panorama = cv2.imread(final_output_path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)

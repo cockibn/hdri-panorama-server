@@ -882,6 +882,7 @@ class HuginPipelineService:
                     # Use PIZ compression exactly like professional Poly Haven HDRs
                     # PIZ provides excellent compression for HDR data (3-4x smaller than ZIP)
                     logger.info("🗜️ Attempting PIZ compression (Poly Haven standard)...")
+                    logger.info(f"🔍 Available EXR compression constants: PIZ={cv2.IMWRITE_EXR_COMPRESSION_PIZ}, ZIP={cv2.IMWRITE_EXR_COMPRESSION_ZIP}")
                     
                     # Try PIZ compression first
                     piz_params = [
