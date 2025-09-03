@@ -58,8 +58,8 @@ limiter = Limiter(
 )
 
 UPLOAD_DIR, OUTPUT_DIR = Path("uploads"), Path("outputs")
-UPLOAD_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def validate_job_id(job_id: str) -> bool:
     """Validate job ID to prevent path traversal and injection attacks."""
@@ -1085,7 +1085,7 @@ def process_panorama():
         }
     
     upload_dir = UPLOAD_DIR / job_id
-    upload_dir.mkdir()
+    upload_dir.mkdir(parents=True, exist_ok=True)
     
     bundle_file = request.files['images_zip']
     bundle_data = bundle_file.read()
