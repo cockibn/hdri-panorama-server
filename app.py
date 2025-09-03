@@ -969,8 +969,9 @@ class MicroservicesPanoramaProcessor:
                     if hdr_panorama is not None:
                         logger.info(f"📱 Loaded HDR panorama: {hdr_panorama.shape}, range=[{hdr_panorama.min():.3f}, {hdr_panorama.max():.3f}]")
                         # Create tone-mapped preview directly from HDR data
+                        logger.info(f"🔧 Using advanced HDR tone mapping for preview generation")
                         self._create_hdr_photosphere_preview(hdr_panorama, preview_path, session_data)
-                        logger.info(f"📱 HDR preview created: {preview_path}")
+                        logger.info(f"📱 Advanced HDR preview created: {preview_path}")
                     else:
                         logger.warning("⚠️ Could not load HDR EXR for preview creation")
                 else:
@@ -1132,9 +1133,9 @@ class MicroservicesPanoramaProcessor:
             # Test multiple tone mapping methods and choose best
             tone_mapping_results = []
             
-            # Method 1: Reinhard (good for most scenes)
+            # Method 1: Conservative Reinhard (better color preservation)
             try:
-                tonemap_reinhard = cv2.createTonemapReinhard(gamma=2.2, intensity=0, light_adapt=1.0, color_adapt=0.0)
+                tonemap_reinhard = cv2.createTonemapReinhard(gamma=1.8, intensity=-0.5, light_adapt=0.8, color_adapt=0.0)
                 reinhard_result = tonemap_reinhard.process(hdr_scaled)
                 reinhard_mean = reinhard_result.mean()
                 tone_mapping_results.append(('Reinhard', reinhard_result, reinhard_mean))
@@ -1142,9 +1143,29 @@ class MicroservicesPanoramaProcessor:
             except Exception as e:
                 logger.warning(f"⚠️ Reinhard tone mapping failed: {e}")
             
-            # Method 2: Drago (good for high contrast scenes)  
+            # Method 2: Improved Simple tone mapping (most reliable)
             try:
-                tonemap_drago = cv2.createTonemapDrago(gamma=1.0, saturation=1.0, bias=0.85)
+                # Normalize HDR range first
+                hdr_normalized = hdr_scaled / (hdr_scaled.max() + 1e-6)  # Prevent division by zero
+                
+                # Apply gentle exposure adjustment based on image statistics
+                hdr_median = np.median(hdr_normalized)
+                exposure_factor = 0.4 / (hdr_median + 0.1)  # Target median of ~0.4
+                exposure_factor = np.clip(exposure_factor, 0.5, 3.0)  # Limit exposure range
+                
+                exposure_adjusted = hdr_normalized * exposure_factor
+                
+                # Apply gamma correction for better color balance
+                simple_result = np.clip(np.power(exposure_adjusted, 1.0/2.0), 0, 1)  # Lighter gamma
+                simple_mean = simple_result.mean()
+                tone_mapping_results.append(('Smart_Simple', simple_result, simple_mean))
+                logger.info(f"🎨 Smart Simple tone mapping: exposure_factor={exposure_factor:.2f}, mean brightness = {simple_mean:.3f}")
+            except Exception as e:
+                logger.warning(f"⚠️ Smart Simple tone mapping failed: {e}")
+            
+            # Method 3: Drago (fallback for high contrast)  
+            try:
+                tonemap_drago = cv2.createTonemapDrago(gamma=1.2, saturation=0.8, bias=0.75)
                 drago_result = tonemap_drago.process(hdr_scaled)
                 drago_mean = drago_result.mean()
                 tone_mapping_results.append(('Drago', drago_result, drago_mean))
@@ -1152,46 +1173,59 @@ class MicroservicesPanoramaProcessor:
             except Exception as e:
                 logger.warning(f"⚠️ Drago tone mapping failed: {e}")
             
-            # Method 3: Simple exposure adjustment (fallback)
-            try:
-                # Simple exposure-based tone mapping
-                exposure_adjusted = hdr_scaled * 2.0  # Increase exposure
-                simple_result = np.clip(np.power(exposure_adjusted, 1.0/2.2), 0, 1)  # Gamma correction
-                simple_mean = simple_result.mean()
-                tone_mapping_results.append(('Simple', simple_result, simple_mean))
-                logger.info(f"🎨 Simple tone mapping: mean brightness = {simple_mean:.3f}")
-            except Exception as e:
-                logger.warning(f"⚠️ Simple tone mapping failed: {e}")
-            
-            # Choose best tone mapping result (aim for 0.3-0.5 mean brightness)
+            # Choose best tone mapping result with improved scoring
             if tone_mapping_results:
-                # Score based on how close to ideal brightness (0.4) and avoid over/under exposure
                 best_result = None
                 best_score = -1
                 
                 for method_name, result, mean_brightness in tone_mapping_results:
-                    # Penalize too dark (<0.2) or too bright (>0.7)
-                    brightness_score = 1.0 - abs(mean_brightness - 0.4) * 2
-                    if mean_brightness < 0.2 or mean_brightness > 0.7:
-                        brightness_score *= 0.5
+                    # Improved scoring: prioritize Smart_Simple method and good brightness
+                    brightness_score = 1.0 - abs(mean_brightness - 0.4) * 1.5  # Less penalty for brightness deviation
                     
-                    logger.info(f"🏆 {method_name}: brightness={mean_brightness:.3f}, score={brightness_score:.3f}")
+                    # Method preference (Smart_Simple is most reliable)
+                    method_bonus = 0.0
+                    if method_name == 'Smart_Simple':
+                        method_bonus = 0.3  # Strong preference for Smart_Simple
+                    elif method_name == 'Reinhard':
+                        method_bonus = 0.1  # Slight preference for Reinhard
                     
-                    if brightness_score > best_score:
-                        best_score = brightness_score
+                    # Penalize extreme brightness values more gently
+                    if mean_brightness < 0.15 or mean_brightness > 0.75:
+                        brightness_score *= 0.7  # Less harsh penalty
+                    
+                    total_score = brightness_score + method_bonus
+                    
+                    logger.info(f"🏆 {method_name}: brightness={mean_brightness:.3f}, brightness_score={brightness_score:.3f}, method_bonus={method_bonus:.1f}, total_score={total_score:.3f}")
+                    
+                    if total_score > best_score:
+                        best_score = total_score
                         best_result = (method_name, result)
                 
                 if best_result:
                     method_name, tone_mapped = best_result
-                    logger.info(f"✅ Selected {method_name} tone mapping for preview")
+                    logger.info(f"✅ Selected {method_name} tone mapping for preview (score: {best_score:.3f})")
                 else:
-                    tone_mapped = tone_mapping_results[0][1]  # Fallback to first result
-                    method_name = tone_mapping_results[0][0]
+                    # Fallback to Smart_Simple if available, else first result
+                    smart_simple_result = next((r for r in tone_mapping_results if r[0] == 'Smart_Simple'), None)
+                    if smart_simple_result:
+                        tone_mapped = smart_simple_result[1]
+                        method_name = smart_simple_result[0]
+                        logger.info("✅ Fallback to Smart_Simple tone mapping")
+                    else:
+                        tone_mapped = tone_mapping_results[0][1]
+                        method_name = tone_mapping_results[0][0]
+                        logger.info(f"✅ Fallback to {method_name} tone mapping")
             else:
-                # Emergency fallback
-                logger.warning("⚠️ All tone mapping failed, using simple clamp")
-                tone_mapped = np.clip(hdr_scaled, 0, 1)
-                method_name = "Clamp"
+                # Emergency fallback with better handling
+                logger.warning("⚠️ All tone mapping failed, using intelligent clamp")
+                # Normalize and apply gentle exposure adjustment
+                hdr_max = hdr_scaled.max()
+                if hdr_max > 1.0:
+                    tone_mapped = hdr_scaled / (hdr_max + 0.1)  # Gentle normalization
+                else:
+                    tone_mapped = hdr_scaled
+                tone_mapped = np.clip(np.power(tone_mapped, 1.0/1.8), 0, 1)  # Light gamma
+                method_name = "Intelligent_Clamp"
             
             # Convert to 8-bit
             ldr_preview = (np.clip(tone_mapped, 0, 1) * 255).astype(np.uint8)
