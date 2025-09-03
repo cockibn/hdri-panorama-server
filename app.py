@@ -233,7 +233,7 @@ def parse_hdr_bundle_v3(bundle_data):
 
 def merge_hdr_brackets(hdr_brackets, output_dir):
     """
-    Merge HDR brackets for each capture point using OpenCV HDR processing.
+    Memory-optimized HDR bracket merging with enhanced algorithms.
     
     Args:
         hdr_brackets: dict with structure {dot_index: [{exposure: float, data: bytes}, ...]}
@@ -242,11 +242,37 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
     Returns:
         merged_images: dict with structure {dot_index: merged_image_path}
     """
-    logger.info("🌈 Starting HDR bracket merging...")
+    logger.info("🌈 Starting enhanced HDR bracket merging...")
     
     merged_images = {}
     
-    for dot_index, brackets in hdr_brackets.items():
+    # Memory optimization: Process dots in small batches to prevent memory overload
+    import gc
+    batch_size = 3  # Process 3 dots at a time to manage memory
+    dot_items = list(hdr_brackets.items())
+    total_dots = len(dot_items)
+    
+    for batch_start in range(0, total_dots, batch_size):
+        batch_end = min(batch_start + batch_size, total_dots)
+        batch_dots = dot_items[batch_start:batch_end]
+        
+        logger.info(f"📦 Processing HDR batch {batch_start//batch_size + 1}/{(total_dots + batch_size - 1)//batch_size} ({len(batch_dots)} dots)")
+        
+        batch_results = _process_hdr_batch(batch_dots, output_dir)
+        merged_images.update(batch_results)
+        
+        # Force garbage collection between batches to free memory
+        gc.collect()
+        logger.info(f"🧹 Memory cleanup completed for batch")
+    
+    logger.info(f"✅ Enhanced HDR merging complete: {len(merged_images)}/{len(hdr_brackets)} dots processed")
+    return merged_images
+
+def _process_hdr_batch(batch_dots, output_dir):
+    """Process a batch of HDR dots to manage memory usage."""
+    batch_results = {}
+    
+    for dot_index, brackets in batch_dots:
         if len(brackets) < 2:
             # Not enough brackets for HDR - use single image
             logger.warning(f"⚠️ Dot {dot_index}: Only {len(brackets)} brackets, skipping HDR merge")
@@ -255,7 +281,7 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                 single_image_path = os.path.join(output_dir, f"merged_dot_{dot_index}.jpg")
                 with open(single_image_path, 'wb') as f:
                     f.write(brackets[0]['data'])
-                merged_images[dot_index] = single_image_path
+                batch_results[dot_index] = single_image_path
             continue
         
         try:
@@ -270,11 +296,34 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                 
                 if cv_img is not None:
                     cv_images.append(cv_img)
-                    # Convert exposure bias to exposure time (assuming base shutter speed of 1/60s)
-                    # EV = -2 means longer exposure (brighter), EV = +2 means shorter exposure (darker)
-                    exposure_time = (1.0 / 60.0) * (2.0 ** -bracket['exposure'])
-                    exposures.append(exposure_time)
-                    logger.info(f"📸 Dot {dot_index}: Loaded bracket EV={bracket['exposure']}, exposure_time={exposure_time:.6f}s")
+                    
+                    # Extract real exposure time from EXIF data instead of assumption
+                    try:
+                        import piexif
+                        exif_dict = piexif.load(bracket['data'])
+                        
+                        # Get actual exposure time from EXIF
+                        if 'Exif' in exif_dict and piexif.ExifIFD.ExposureTime in exif_dict['Exif']:
+                            exp_time = exif_dict['Exif'][piexif.ExifIFD.ExposureTime]
+                            if isinstance(exp_time, tuple) and len(exp_time) == 2:
+                                actual_exposure_time = exp_time[0] / exp_time[1]
+                            else:
+                                actual_exposure_time = float(exp_time)
+                            
+                            exposures.append(actual_exposure_time)
+                            logger.info(f"📸 Dot {dot_index}: EXIF exposure_time={actual_exposure_time:.6f}s (EV={bracket['exposure']})")
+                        else:
+                            # Fallback to EV calculation with warning
+                            fallback_exposure_time = (1.0 / 60.0) * (2.0 ** -bracket['exposure'])
+                            exposures.append(fallback_exposure_time)
+                            logger.warning(f"⚠️ Dot {dot_index}: No EXIF exposure time, using calculated={fallback_exposure_time:.6f}s (EV={bracket['exposure']})")
+                            
+                    except Exception as e:
+                        # Fallback to original calculation if EXIF extraction fails
+                        fallback_exposure_time = (1.0 / 60.0) * (2.0 ** -bracket['exposure'])
+                        exposures.append(fallback_exposure_time)
+                        logger.warning(f"⚠️ Dot {dot_index}: EXIF extraction failed ({e}), using calculated={fallback_exposure_time:.6f}s")
+                        
                 else:
                     logger.warning(f"⚠️ Dot {dot_index}: Failed to decode bracket EV={bracket['exposure']}")
             
@@ -282,16 +331,40 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                 logger.warning(f"⚠️ Dot {dot_index}: Only {len(cv_images)} valid images after loading, skipping HDR merge")
                 continue
             
-            # Create HDR merge object
-            merge_debevec = cv2.createMergeDebevec()
-            
             # Convert to numpy arrays
             exposures_np = np.array(exposures, dtype=np.float32)
             
             logger.info(f"🌈 Dot {dot_index}: Merging {len(cv_images)} brackets with exposures {exposures}")
             
-            # Merge HDR - preserve true HDR data
-            hdr_image = merge_debevec.process(cv_images, exposures_np)
+            # Enhanced HDR merging with multiple algorithms for better quality
+            try:
+                # Method 1: Debevec (original, good for well-exposed scenes)
+                merge_debevec = cv2.createMergeDebevec()
+                hdr_debevec = merge_debevec.process(cv_images, exposures_np)
+                
+                # Method 2: Robertson (better noise handling, good for challenging conditions)
+                merge_robertson = cv2.createMergeRobertson()
+                hdr_robertson = merge_robertson.process(cv_images, exposures_np)
+                
+                # Quality assessment to choose best result
+                debevec_dr = np.log2(hdr_debevec.max() / hdr_debevec.min()) if hdr_debevec.min() > 0 else 0
+                robertson_dr = np.log2(hdr_robertson.max() / hdr_robertson.min()) if hdr_robertson.min() > 0 else 0
+                
+                # Choose algorithm with better dynamic range
+                if robertson_dr > debevec_dr * 1.1:  # Robertson significantly better
+                    hdr_image = hdr_robertson
+                    merge_method = "Robertson"
+                else:
+                    hdr_image = hdr_debevec  # Default to Debevec for consistency
+                    merge_method = "Debevec"
+                    
+                logger.info(f"🔬 Dot {dot_index}: Used {merge_method} HDR merge (DR: Debevec={debevec_dr:.2f}, Robertson={robertson_dr:.2f})")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Dot {dot_index}: Advanced HDR merge failed ({e}), using basic Debevec")
+                # Fallback to simple Debevec merge
+                merge_debevec = cv2.createMergeDebevec()
+                hdr_image = merge_debevec.process(cv_images, exposures_np)
             
             # **HDR MERGE VALIDATION**: Verify we created true HDR data
             hdr_min, hdr_max = hdr_image.min(), hdr_image.max()
@@ -375,11 +448,11 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
             
             # Use HDR TIFF for stitching if successful, fallback to LDR
             if hdr_success:
-                merged_images[dot_index] = hdr_merged_path
+                batch_results[dot_index] = hdr_merged_path
                 logger.info(f"✅ Dot {dot_index}: True HDR merge saved as 32-bit TIFF for stitching")
                 success = True
             elif ldr_success:
-                merged_images[dot_index] = merged_image_path
+                batch_results[dot_index] = merged_image_path
                 logger.warning(f"⚠️ Dot {dot_index}: HDR TIFF failed, using LDR JPG fallback")
                 success = True
             else:
@@ -394,13 +467,12 @@ def merge_hdr_brackets(hdr_brackets, output_dir):
                 fallback_path = os.path.join(output_dir, f"merged_dot_{dot_index}.jpg")
                 with open(fallback_path, 'wb') as f:
                     f.write(middle_bracket['data'])
-                merged_images[dot_index] = fallback_path
+                batch_results[dot_index] = fallback_path
                 logger.info(f"📸 Dot {dot_index}: Used fallback middle exposure (EV={middle_bracket['exposure']})")
             except Exception as fallback_error:
                 logger.error(f"❌ Dot {dot_index}: Fallback also failed - {str(fallback_error)}")
     
-    logger.info(f"✅ HDR merging complete: {len(merged_images)}/{len(hdr_brackets)} dots processed")
-    return merged_images
+    return batch_results
 
 def create_enhanced_bundle_with_metadata(original_bundle_data: bytes, session_metadata: dict, output_path):
     """
