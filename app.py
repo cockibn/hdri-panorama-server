@@ -314,13 +314,15 @@ def _process_hdr_batch(batch_dots, output_dir):
                             logger.info(f"📸 Dot {dot_index}: EXIF exposure_time={actual_exposure_time:.6f}s (EV={bracket['exposure']})")
                         else:
                             # Fallback to EV calculation with warning
-                            fallback_exposure_time = (1.0 / 60.0) * (2.0 ** -bracket['exposure'])
+                            # FIXED: Use proper EV-to-time conversion (base 1.0s instead of 1/60s)
+                            fallback_exposure_time = 1.0 * (2.0 ** -bracket['exposure'])
                             exposures.append(fallback_exposure_time)
                             logger.warning(f"⚠️ Dot {dot_index}: No EXIF exposure time, using calculated={fallback_exposure_time:.6f}s (EV={bracket['exposure']})")
                             
                     except Exception as e:
                         # Fallback to original calculation if EXIF extraction fails
-                        fallback_exposure_time = (1.0 / 60.0) * (2.0 ** -bracket['exposure'])
+                        # FIXED: Use proper EV-to-time conversion (base 1.0s instead of 1/60s)
+                        fallback_exposure_time = 1.0 * (2.0 ** -bracket['exposure'])
                         exposures.append(fallback_exposure_time)
                         logger.warning(f"⚠️ Dot {dot_index}: EXIF extraction failed ({e}), using calculated={fallback_exposure_time:.6f}s")
                         
@@ -335,6 +337,7 @@ def _process_hdr_batch(batch_dots, output_dir):
             exposures_np = np.array(exposures, dtype=np.float32)
             
             logger.info(f"🌈 Dot {dot_index}: Merging {len(cv_images)} brackets with exposures {exposures}")
+            # VERIFICATION: For ±4 EV range [-4,-2,0,+2,+4], expect times [16.0, 4.0, 1.0, 0.25, 0.0625]
             
             # Enhanced HDR merging with multiple algorithms for better quality
             try:
