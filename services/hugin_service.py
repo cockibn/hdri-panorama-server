@@ -852,6 +852,27 @@ class HuginPipelineService:
                     logger.info(f"🔍 HDR Analysis - Original TIFF: dtype={stitched_hdr.dtype}, shape={stitched_hdr.shape}")
                     logger.info(f"🔍 HDR Range: [{original_min:.6f}, {original_max:.6f}]")
                     
+                    # **INDOOR SCENE DETECTION**: Check if HDR values are unnaturally high
+                    # Indoor scenes should typically have max values < 100, not thousands
+                    if original_max > 500:
+                        percentile_95 = np.percentile(stitched_hdr, 95)
+                        logger.warning(f"⚠️ Extremely high HDR values detected (max={original_max:.1f}, 95th={percentile_95:.1f})")
+                        
+                        # Check if this looks like an indoor scene (most values relatively low)
+                        median_val = np.median(stitched_hdr)
+                        if median_val > 100:  # Median too high for typical indoor
+                            logger.info("🏠 Detected overexposed indoor scene - normalizing HDR values")
+                            
+                            # Normalize to reasonable indoor HDR range (0-100 for typical indoor)
+                            # Preserve relative values but scale down the extreme brightness
+                            scale_factor = 50.0 / percentile_95  # Target 95th percentile at 50
+                            stitched_hdr = stitched_hdr * scale_factor
+                            
+                            new_min, new_max = stitched_hdr.min(), stitched_hdr.max()
+                            logger.info(f"📊 Normalized HDR range: [{new_min:.2f}, {new_max:.2f}] (scale={scale_factor:.4f})")
+                        else:
+                            logger.info("🌞 High values may be from windows/lights - preserving original range")
+                    
                     # Check for HDR indicators
                     values_above_1 = np.sum(stitched_hdr > 1.0)
                     total_pixels = stitched_hdr.size
@@ -1006,6 +1027,8 @@ class HuginPipelineService:
                 'enblend', 
                 '--fine-mask',           # RESEARCH: Best with graph-cut for detailed seam placement
                 '-l', '20',              # RESEARCH: Higher levels for smoother high-overlap transitions
+                '--exposure-weight=1.0', # CRITICAL: Normalize exposures to prevent HDR amplification
+                '--exposure-sigma=0.2',  # Control exposure blending smoothness
                 '--compression=lzw',     # Maintain compression for storage efficiency
                 # NOTE: graph-cut is DEFAULT (superior to nearest-feature-transform)
                 # NOTE: Removed incompatible options: -m, --blend-colorspace for Railway compatibility
